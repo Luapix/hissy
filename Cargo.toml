@@ -1,0 +1,12 @@
+[package]
+name = "hissy"
+version = "0.1.0"
+authors = ["Luapix <luapixel@gmail.com>"]
+edition = "2018"
+default-run = "cli"
+
+[dependencies]
+peg = "0.6.1"
+unicode-xid = "0.2.0"
+smallstr = "0.2.0"
+num_enum = "0.4.2"
