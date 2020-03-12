@@ -64,6 +64,8 @@ peg::parser! {
 			x:(@) sym("+") y:@ { Expr::BinOp(BinOp::Plus,  Box::new(x), Box::new(y)) }
 			x:(@) sym("-") y:@ { Expr::BinOp(BinOp::Minus, Box::new(x), Box::new(y)) }
 			--
+			sym("-") x:@ { Expr::UnaOp(UnaOp::Minus, Box::new(x)) }
+			--
 			x:(@) sym("*") y:@ { Expr::BinOp(BinOp::Times,   Box::new(x), Box::new(y)) }
 			x:(@) sym("/") y:@ { Expr::BinOp(BinOp::Divides, Box::new(x), Box::new(y)) }
 			x:(@) sym("%") y:@ { Expr::BinOp(BinOp::Modulo,  Box::new(x), Box::new(y)) }

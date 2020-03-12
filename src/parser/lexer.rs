@@ -65,24 +65,26 @@ static COMPLEX_SYMBOLS: [&str; 21] = [
 ];
 
 fn parse_symbol(it: &mut Peekable<CharIndices>, c: char) -> Option<SymbolStr> {
-	if SYMBOL_START.contains(&c) {
-		it.next();
+	let simple = SIMPLE_SYMBOLS.contains(&c); // is c a symbol by itself?
+	let start = SYMBOL_START.contains(&c); // could it start a complex symbol?
+	
+	if !simple && !start { return None; }
+	it.next(); // it has to be part of a symbol, consume c.
+	
+	if start {
 		let pair = it.peek().map(|(_,c2)| {
 			let mut s = SmallString::from(c);
 			s.push(*c2);
 			s
 		});
 		if pair.as_ref().map_or(false, |p| COMPLEX_SYMBOLS.contains(&p.as_ref())) {
-			it.next();
+			it.next(); // consume second character
 			return pair;
 		}
 	}
-	if SIMPLE_SYMBOLS.contains(&c) {
-		it.next();
-		Some(SmallString::from(c))
-	} else {
-		None
-	}
+	
+	// if we get here, it has to be a simple symbol
+	Some(SmallString::from(c))
 }
 
 fn test_next_char<P>(it: &mut Peekable<CharIndices>, pred: &P) -> bool where P: Fn(char) -> bool {
