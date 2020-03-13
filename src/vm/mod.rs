@@ -33,7 +33,7 @@ pub struct VM<'a> {
 
 impl VM<'_> {
 	pub fn new(heap: &mut GCHeap) -> VM {
-		VM { heap: heap, registers: vec![NIL; 16] }
+		VM { heap: heap, registers: vec![] }
 	}
 	
 	pub fn mut_reg(&mut self, reg: u8) -> &mut Value {
@@ -45,6 +45,8 @@ impl VM<'_> {
 	}
 
 	pub fn run_chunk(&mut self, chunk: &Chunk) {
+		self.registers = vec![NIL; chunk.nb_registers as usize];
+		
 		let mut it = chunk.iter();
 		
 		macro_rules! bin_op {

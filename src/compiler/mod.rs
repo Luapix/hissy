@@ -100,6 +100,7 @@ impl Compiler {
 				_ => unimplemented!("Unimplemented instruction type: {:?}", stat),
 			}
 		}
+		chunk.nb_registers = self.next_free_reg;
 		Ok(chunk)
 	}
 }

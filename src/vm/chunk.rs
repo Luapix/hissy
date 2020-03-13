@@ -1,4 +1,5 @@
 
+use std::path::Path;
 use std::convert::TryFrom;
 use std::fs;
 
@@ -31,6 +32,7 @@ impl ChunkConstant {
 
 
 pub struct Chunk {
+	pub nb_registers: u16,
 	pub constants: Vec<ChunkConstant>,
 	pub code: Vec<u8>,
 }
@@ -38,13 +40,14 @@ pub struct Chunk {
 
 impl Chunk {
 	pub fn new() -> Chunk {
-		Chunk { constants: vec![], code: vec![] }
+		Chunk { nb_registers: 0, constants: vec![], code: vec![] }
 	}
 	
-	pub fn from_file(path: &str) -> Chunk {
+	pub fn from_file<T: AsRef<Path>>(path: T) -> Chunk {
 		let mut chunk = Chunk::new();
 		let contents = fs::read(path).expect("Unable to read chunk");
 		let mut it = contents.iter();
+		chunk.nb_registers = read_u16(&mut it);
 		let nb_constants = read_u16(&mut it);
 		for _ in 0..nb_constants {
 			let t = ConstantType::try_from(read_u8(&mut it)).expect("Unrecognized constant type");
@@ -59,8 +62,33 @@ impl Chunk {
 			};
 			chunk.constants.push(value);
 		}
-		chunk.code.extend_from_slice(&it.copied().collect::<Vec<u8>>());
+		chunk.code.extend(&it.copied().collect::<Vec<u8>>());
 		chunk
+	}
+	
+	pub fn to_file<T: AsRef<Path>>(&self, path: T) -> std::io::Result<()> {
+		let mut bytes = vec![];
+		bytes.extend(&self.nb_registers.to_le_bytes());
+		bytes.extend(&u16::try_from(self.constants.len()).unwrap().to_le_bytes());
+		for cst in &self.constants {
+			match cst {
+				ChunkConstant::Int(i) => {
+					bytes.push(ConstantType::Int as u8);
+					bytes.extend(&i.to_le_bytes());
+				},
+				ChunkConstant::Real(r) => {
+					bytes.push(ConstantType::Real as u8);
+					bytes.extend(&r.to_le_bytes());
+				},
+				ChunkConstant::Str(s) => {
+					bytes.push(ConstantType::String as u8);
+					bytes.extend(&u16::try_from(s.len()).unwrap().to_le_bytes());
+					bytes.extend(s.as_bytes());
+				},
+			}
+		}
+		bytes.extend(&self.code);
+		fs::write(path, &bytes)
 	}
 	
 	pub fn emit_instr(&mut self, instr: InstrType) {
