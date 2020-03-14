@@ -1,24 +1,45 @@
 
+use std::collections::HashSet;
 use std::convert::TryInto;
 
 use super::parser::{parse, ast::{Expr, Stat, BinOp, UnaOp}};
 use super::vm::{chunk::{Chunk, ChunkConstant}, InstrType};
 
 pub struct Compiler {
+	reg_cnt: u16,
 	next_free_reg: u16,
+	used_registers: HashSet<u8>,
 }
 
 impl Compiler {
 	pub fn new() -> Compiler {
-		Compiler { next_free_reg: 0 }
+		Compiler { reg_cnt: 0, next_free_reg: 0, used_registers: HashSet::new() }
 	}
 	
-	fn insert_free_reg(&mut self, chunk: &mut Chunk) -> u8 {
+	fn new_reg(&mut self) -> u8 {
 		let new_reg = self.next_free_reg.try_into()
 			.expect("Cannot compile: Too many registers required");
-		chunk.emit_byte(new_reg);
-		self.next_free_reg += 1;
+		if new_reg as u16 + 1 > self.reg_cnt {
+			self.reg_cnt = new_reg as u16 + 1;
+		}
+		self.used_registers.insert(new_reg);
+		while self.next_free_reg.try_into().map_or(false, |i: u8| self.used_registers.contains(&i)) {
+			self.next_free_reg += 1;
+		}
 		new_reg
+	}
+	
+	fn emit_new_reg(&mut self, chunk: &mut Chunk) -> u8 {
+		let new_reg = self.new_reg();
+		chunk.emit_byte(new_reg);
+		new_reg
+	}
+	
+	fn free_reg(&mut self, i: u8) {
+		self.used_registers.remove(&i);
+		if (i as u16) < self.next_free_reg {
+			self.next_free_reg = i as u16;
+		}
 	}
 	
 	fn compile_constant(&mut self, chunk: &mut Chunk, val: ChunkConstant) -> u8 {
@@ -26,18 +47,18 @@ impl Compiler {
 		chunk.emit_instr(InstrType::Cst);
 		chunk.emit_byte((chunk.constants.len() - 1).try_into()
 			.expect("Cannot compile: Too many constants required"));
-		self.insert_free_reg(chunk)
+		self.emit_new_reg(chunk)
 	}
 	
 	fn compile_expr(&mut self, chunk: &mut Chunk, expr: &Expr) -> u8 {
 		match expr {
 			Expr::Nil => {
 				chunk.emit_instr(InstrType::Nil);
-				self.insert_free_reg(chunk)
+				self.emit_new_reg(chunk)
 			},
 			Expr::Bool(b) => {
 				chunk.emit_instr(if *b {InstrType::True} else {InstrType::False});
-				self.insert_free_reg(chunk)
+				self.emit_new_reg(chunk)
 			},
 			Expr::Int(i) =>
 				self.compile_constant(chunk, ChunkConstant::Int(*i)),
@@ -68,8 +89,9 @@ impl Compiler {
 				chunk.emit_instr(instr);
 				chunk.emit_byte(r1);
 				chunk.emit_byte(r2);
-				chunk.emit_byte(r1); // Reuse r1 for result
-				r1
+				self.free_reg(r1); // Reuse r1/r2 for result
+				self.free_reg(r2);
+				self.emit_new_reg(chunk)
 			},
 			Expr::UnaOp(op, e) => {
 				let r = self.compile_expr(chunk, &e);
@@ -79,8 +101,8 @@ impl Compiler {
 				};
 				chunk.emit_instr(instr);
 				chunk.emit_byte(r);
-				chunk.emit_byte(r); // Reuse r for result
-				r
+				self.free_reg(r); // Reuse r for result
+				self.emit_new_reg(chunk)
 			}
 			
 			_ => unimplemented!("Unimplemented expression type: {:?}", expr),
@@ -100,7 +122,7 @@ impl Compiler {
 				_ => unimplemented!("Unimplemented instruction type: {:?}", stat),
 			}
 		}
-		chunk.nb_registers = self.next_free_reg;
+		chunk.nb_registers = self.reg_cnt;
 		Ok(chunk)
 	}
 }
