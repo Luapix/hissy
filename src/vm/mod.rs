@@ -14,7 +14,7 @@ use value::{Value, NIL, TRUE, FALSE};
 use serial::{read_u8};
 use chunk::Chunk;
 
-#[derive(TryFromPrimitive)]
+#[derive(Debug, TryFromPrimitive)]
 #[repr(u8)]
 pub enum InstrType {
 	Nop,

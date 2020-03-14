@@ -3,7 +3,7 @@ use std::path::Path;
 use std::convert::TryFrom;
 use std::fs;
 
-use super::{InstrType, value::Value, gc::GCHeap, serial::*};
+use super::{InstrType, InstrType::*, value::Value, gc::GCHeap, serial::*};
 
 
 #[derive(TryFromPrimitive)]
@@ -14,6 +14,7 @@ pub enum ConstantType {
 	String,
 }
 
+#[derive(Debug)]
 pub enum ChunkConstant {
 	Int(i32),
 	Real(f64),
@@ -101,5 +102,40 @@ impl Chunk {
 	
 	pub fn iter(&self) -> impl Iterator<Item = &u8> {
 		self.code.iter()
+	}
+	
+	pub fn disassemble(&self) -> String {
+		let mut s = String::new();
+		s += "[Chunk]\n";
+		s += &format!("{} registers\n\n", self.nb_registers);
+		
+		s += "Constants:\n";
+		for (i, cst) in self.constants.iter().enumerate() {
+			s += &format!("{}: {:?}\n", i, cst);
+		}
+		s += "\n";
+		
+		s += "Code:\n";
+		let mut it = self.iter();
+		while let Some(b) = it.next() {
+			let instr = InstrType::try_from(*b).unwrap();
+			s += &format!("| {:?}(", instr);
+			match instr {
+				Nop => {},
+				Nil | True | False | Log => {
+					s += &format!("{}", it.next().unwrap());
+				},
+				Cst | Cpy | Neg | Not => {
+					s += &format!("{}, {}", it.next().unwrap(), it.next().unwrap());
+				},
+				Add | Sub | Mul | Div | Mod | Pow | Or | And
+					| Eq | Neq | Lth | Leq | Gth | Geq => {
+					s += &format!("{}, {}, {}", it.next().unwrap(), it.next().unwrap(), it.next().unwrap());
+				},
+			}
+			s += ")\n";
+		}
+		
+		s
 	}
 }

@@ -5,7 +5,7 @@ use std::path::Path;
 use hissy::parser::lexer::{Tokens, read_tokens};
 use hissy::parser;
 use hissy::parser::{ast::Program};
-use hissy::vm::{VM, gc::GCHeap};
+use hissy::vm::{VM, gc::GCHeap, chunk::Chunk};
 use hissy::compiler::Compiler;
 use hissy::{format_error, display_result, debug_result, display_error};
 
@@ -25,6 +25,11 @@ fn compile(file: &str) -> Result<(), String> {
 	let mut compiler = Compiler::new();
 	let chunk = format_error(compiler.compile_chunk(&code), "Compile error")?;
 	format_error(chunk.to_file(Path::new(file).with_extension("hic")), "Compile error")
+}
+
+fn list(file: &str) {
+	let chunk = Chunk::from_file(file);
+	println!("{}", chunk.disassemble());
 }
 
 fn interpret(file: &str) -> Result<(), String> {
@@ -58,10 +63,11 @@ fn main() {
 			"lex" => return display_result(lex(&args[2])),
 			"parse" => return debug_result(parse(&args[2])),
 			"compile" => return display_error(compile(&args[2])),
+			"list" => return list(&args[2]),
 			"interpret" => return display_error(interpret(&args[2])),
 			"run" => return display_error(run(&args[2])),
 			_ => println!("Unknown command {:?}", args[1])
 		}
 	}
-	println!("Usage: hissy lex|parse|compile|interpret|run <file>");
+	println!("Usage: hissy lex|parse|compile|list|interpret|run <file>");
 }
