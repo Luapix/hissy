@@ -8,53 +8,53 @@ use std::ops::Deref;
 use super::value::Value;
 
 
-pub trait GCAble: Any + Debug {
+pub trait AsAny {
 	fn as_any(&self) -> &dyn Any;
 	fn as_any_mut(&mut self) -> &mut dyn Any;
-	fn debug(&self) -> String;
 }
 
-impl<T: Any + Debug> GCAble for T {
+impl<T: Any> AsAny for T {
 	fn as_any(&self) -> &dyn Any { self }
 	fn as_any_mut(&mut self) -> &mut dyn Any { self }
-	fn debug(&self) -> String { format!("{:?}", self) }
 }
 
-pub trait Trace: GCAble {
-	fn mark(&self) {}
-	fn unroot(&mut self) {}
+pub trait Traceable {
+	fn mark(&self); // Call .mark() on direct GCRef/Value children
+	fn unroot(&mut self); // Call .unroot() on direct GCRef/Value children
 }
+
+pub trait GC: 'static + Traceable + AsAny + Debug {}
+impl<T: 'static + Traceable + AsAny + Debug> GC for T {}
 
 
 pub struct GCWrapper {
 	marked: bool,
 	roots: u32,
-	data: Box<dyn Trace>,
+	data: Box<dyn GC>,
 }
 
 impl GCWrapper {
-	fn new<T: Trace>(value: T) -> GCWrapper {
+	fn new<T: GC>(value: T) -> GCWrapper {
 		GCWrapper { marked: false, roots: 0, data: Box::new(value) }
 	}
 	
-	pub fn is_a<T: Trace>(&self) -> bool {
+	pub fn is_a<T: GC>(&self) -> bool {
 		(*self.data).as_any().is::<T>()
 	}
 	
-	pub fn debug(&self) -> String {
-		self.data.debug()
-	}
-	
-	pub fn get<T: Trace>(&mut self) -> Option<&mut T> {
+	pub fn get<T: GC>(&mut self) -> Option<&mut T> {
 		(*self.data).as_any_mut().downcast_mut::<T>()
 	}
 	
-	pub fn root(&mut self) {
+	pub fn debug(&self) -> String {
+		format!("{:?}", self.data)
+	}
+	
+	pub fn signal_root(&mut self) {
 		self.roots += 1;
 	}
-	pub fn unroot(&mut self) {
+	pub fn signal_unroot(&mut self) {
 		self.roots -= 1;
-		(*self.data).unroot();
 	}
 	
 	pub fn mark(&mut self) {
@@ -63,23 +63,24 @@ impl GCWrapper {
 			(*self.data).mark();
 		}
 	}
+	
 	pub fn reset(&mut self) {
 		self.marked = false;
 	}
 }
 
 
-pub struct GCRef<T: Trace> {
+pub struct GCRef<T: GC> {
 	pub root: bool,
 	pub pointer: *mut GCWrapper,
 	phantom: PhantomData<T>,
 }
 
-impl<T: Trace> GCRef<T> {
+impl<T: GC> GCRef<T> {
 	pub fn from_pointer(pointer: *mut GCWrapper, root: bool) -> GCRef<T> {
 		let new_ref = GCRef { root: root, pointer: pointer, phantom: PhantomData::<T> };
 		assert!(new_ref.wrapper().is_a::<T>(), "Cannot make GCRef<T> to non-T Object");
-		if root { new_ref.wrapper().root(); }
+		if root { new_ref.wrapper().signal_root(); }
 		new_ref
 	}
 	
@@ -92,33 +93,34 @@ impl<T: Trace> GCRef<T> {
 	pub fn unroot(&mut self) {
 		if self.root {
 			self.root = false;
-			self.wrapper().unroot();
+			self.wrapper().signal_unroot();
 		}
 	}
 	
 	pub fn mark(&self) {
 		self.wrapper().mark();
 	}
+	
 	pub fn reset(&self) {
 		self.wrapper().reset();
 	}
 }
 
 
-impl<T: Trace> Clone for GCRef<T> {
+impl<T: GC> Clone for GCRef<T> {
 	fn clone(&self) -> Self {
 		GCRef::from_pointer(self.pointer, true)
 	}
 }
 
-impl<T: Trace> Drop for GCRef<T> {
+impl<T: GC> Drop for GCRef<T> {
 	fn drop(&mut self) {
 		self.unroot();
 	}
 }
 
 
-impl<T: Trace> Deref for GCRef<T> {
+impl<T: GC> Deref for GCRef<T> {
 	type Target = T;
 	
 	fn deref(&self) -> &Self::Target {
@@ -126,7 +128,7 @@ impl<T: Trace> Deref for GCRef<T> {
 	}
 }
 
-impl<T: Trace + Debug> Debug for GCRef<T> {
+impl<T: GC> Debug for GCRef<T> {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
 		write!(f, "GCRef({:?})", **self)
 	}
@@ -142,17 +144,19 @@ impl GCHeap {
 		GCHeap { objects: HashSet::new() }
 	}
 	
-	fn add<T: Trace>(&mut self, v: T) -> *mut GCWrapper {
+	fn add<T: GC>(&mut self, v: T) -> *mut GCWrapper {
 		let pointer = Box::into_raw(Box::new(GCWrapper::new(v))); // Leak GCWrapper memory
-		unsafe { (*pointer).data.unroot(); } // Of course, the pointer is valid here
+		unsafe { (*pointer).data.unroot(); }
+		// Unroots any GCRef/Values that may have been moved into the object
+		// Safety: Of course, the pointer is still valid at this point
 		self.objects.insert(pointer);
 		pointer
 	}
 
-	pub fn make_ref<T: Trace>(&mut self, v: T) -> GCRef<T> {
+	pub fn make_ref<T: GC>(&mut self, v: T) -> GCRef<T> {
 		GCRef::from_pointer(self.add(v), true) // Root new object
 	}
-	pub fn make_value<T: Trace>(&mut self, v: T) -> Value {
+	pub fn make_value<T: GC>(&mut self, v: T) -> Value {
 		Value::from_pointer(self.add(v), true) // Root new object
 	}
 	
@@ -177,11 +181,17 @@ impl GCHeap {
 	}
 	
 	pub fn examine(&self) {
+		println!("== GC examine ==");
 		for pointer in self.objects.iter() {
-			println!("Pointer @ {:?}: {} roots", *pointer, unsafe { (**pointer).roots });
+			let wrapper = unsafe { &**pointer };
 			// Safety of previous line: The GC algorithm should remove pointers from self.objects
 			// as soon as the object is freed.
+			println!("{}: {} roots", wrapper.debug(), wrapper.roots);
 		}
+	}
+	
+	pub fn is_empty(&self) -> bool {
+		self.objects.is_empty()
 	}
 }
 

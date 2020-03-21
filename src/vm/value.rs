@@ -3,7 +3,7 @@ use std::fmt;
 use num_enum::TryFromPrimitive;
 use std::convert::TryFrom;
 
-use super::gc::{Trace, GCRef, GCWrapper};
+use super::gc::{GC, GCRef, GCWrapper};
 
 
 pub struct Value(u64);
@@ -42,12 +42,11 @@ impl Value {
 	}
 	
 	pub fn from_pointer(pointer: *mut GCWrapper, root: bool) -> Value {
-		if root {
-			unsafe { (*pointer).root(); }
-		}
 		let pointer = pointer as u64;
 		debug_assert!(pointer & DATA_MASK == pointer, "Object pointer has too many bits to fit in Value");
-		Value(base_value(if root { ValueType::Root } else { ValueType::Ref }) + pointer)
+		let new_val = Value(base_value(if root { ValueType::Root } else { ValueType::Ref }) + pointer);
+		if root { new_val.get_pointer().unwrap().signal_root() }
+		new_val
 	}
 	
 	pub fn get_pointer(&self) -> Option<&mut GCWrapper> {
@@ -61,6 +60,19 @@ impl Value {
 	
 	pub fn is_nil(&self) -> bool {
 		self.get_type() == ValueType::Nil
+	}
+	
+	pub fn unroot(&mut self) {
+		if self.get_type() == ValueType::Root {
+			self.0 = base_value(ValueType::Ref) + (self.0 & DATA_MASK);
+			self.get_pointer().unwrap().signal_unroot();
+		}
+	}
+	
+	pub fn mark(&self) {
+		if let Some(p) = self.get_pointer() {
+			p.mark()
+		}
 	}
 }
 
@@ -89,13 +101,13 @@ impl fmt::Debug for Value {
 }
 
 
-impl<T: Trace> From<GCRef<T>> for Value {
+impl<T: GC> From<GCRef<T>> for Value {
 	fn from(gc_ref: GCRef<T>) -> Value {
 		Value::from_pointer(gc_ref.pointer, gc_ref.root)
 	}
 }
 
-impl<T: Trace> TryFrom<Value> for GCRef<T> {
+impl<T: GC> TryFrom<Value> for GCRef<T> {
 	type Error = &'static str;
 	
 	fn try_from(value: Value) -> Result<Self, &'static str> {
@@ -125,10 +137,7 @@ impl Clone for Value {
 
 impl Drop for Value {
 	fn drop(&mut self) {
-		if self.get_type() == ValueType::Root { // If we were rooting an object, unroot
-			let pointer = self.get_pointer().unwrap();
-			pointer.unroot();
-		}
+		self.unroot(); // If we were rooting an object, unroot
 	}
 }
 
