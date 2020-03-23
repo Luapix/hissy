@@ -100,10 +100,6 @@ impl Chunk {
 		self.code.push(byte);
 	}
 	
-	pub fn iter(&self) -> impl Iterator<Item = &u8> {
-		self.code.iter()
-	}
-	
 	pub fn disassemble(&self) -> String {
 		let mut s = String::new();
 		s += "[Chunk]\n";
@@ -116,10 +112,11 @@ impl Chunk {
 		s += "\n";
 		
 		s += "Code:\n";
-		let mut it = self.iter();
+		let mut it = self.code.iter();
+		let mut pos = 0;
 		while let Some(b) = it.next() {
 			let instr = InstrType::try_from(*b).unwrap();
-			s += &format!("| {:?}(", instr);
+			s += &format!("{}| {:?}(", pos, instr);
 			match instr {
 				Nop => {},
 				Nil | True | False | Log => {
@@ -132,9 +129,18 @@ impl Chunk {
 					| Eq | Neq | Lth | Leq | Gth | Geq => {
 					s += &format!("{}, {}, {}", it.next().unwrap(), it.next().unwrap(), it.next().unwrap());
 				},
+				Jmp => {
+					s += &format!("{}", i8::from_le_bytes([*it.next().unwrap()]));
+				},
+				Jit | Jif => {
+					s += &format!("{}, {}", i8::from_le_bytes([*it.next().unwrap()]), it.next().unwrap());
+				},
+				_ => unimplemented!()
 			}
 			s += ")\n";
+			pos = self.code.len() - it.len();
 		}
+		s += &format!("{}|\n", pos);
 		
 		s
 	}

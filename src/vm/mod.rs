@@ -1,6 +1,7 @@
 
 use num_enum::TryFromPrimitive;
 use std::convert::TryFrom;
+use std::slice;
 
 pub mod gc;
 pub mod value;
@@ -11,7 +12,7 @@ pub mod object;
 
 use gc::GCHeap;
 use value::{Value, NIL, TRUE, FALSE};
-use serial::{read_u8};
+use serial::*;
 use chunk::Chunk;
 
 #[derive(Debug, TryFromPrimitive)]
@@ -23,12 +24,19 @@ pub enum InstrType {
 	Neg, Add, Sub, Mul, Div, Mod, Pow,
 	Not, Or, And,
 	Eq, Neq, Lth, Leq, Gth, Geq,
+	Jmp, Jit, Jif,
 	Log,
 }
 
 pub struct VM<'a> {
 	heap: &'a mut GCHeap,
 	registers: Vec<Value>,
+}
+
+fn compute_jump<'a>(rel_jmp: isize, code: &'a Vec<u8>, it: &slice::Iter<'a, u8>) -> slice::Iter<'a, u8> {
+	let pos = code.len() - it.len();
+	let final_pos = usize::try_from(pos as isize + rel_jmp).expect("Jumped back too far");
+	code.get(final_pos..).expect("Jumped forward too far").iter()
 }
 
 impl VM<'_> {
@@ -47,7 +55,7 @@ impl VM<'_> {
 	pub fn run_chunk(&mut self, chunk: &Chunk) {
 		self.registers = vec![NIL; chunk.nb_registers as usize];
 		
-		let mut it = chunk.iter();
+		let mut it = chunk.code.iter();
 		
 		macro_rules! bin_op {
 			($method:ident) => {{
@@ -106,10 +114,29 @@ impl VM<'_> {
 				InstrType::Leq => bin_op!(leq),
 				InstrType::Gth => bin_op!(gth),
 				InstrType::Geq => bin_op!(geq),
+				InstrType::Jmp => {
+					let rel_jmp = read_i8(&mut it);
+					it = compute_jump(isize::try_from(rel_jmp).unwrap(), &chunk.code, &it);
+				},
+				InstrType::Jit => {
+					let rel_jmp = read_i8(&mut it);
+					let cond_value = self.reg(read_u8(&mut it));
+					if bool::try_from(cond_value).expect("Non-bool used in condition") {
+						it = compute_jump(isize::try_from(rel_jmp).unwrap(), &chunk.code, &it);
+					}
+				},
+				InstrType::Jif => {
+					let rel_jmp = read_i8(&mut it);
+					let cond_value = self.reg(read_u8(&mut it));
+					if !bool::try_from(cond_value).expect("Non-bool used in condition") {
+						it = compute_jump(isize::try_from(rel_jmp).unwrap(), &chunk.code, &it);
+					}
+				},
 				InstrType::Log => {
 					let reg = read_u8(&mut it);
 					println!("{:?}", self.registers[reg as usize]);
 				},
+				_ => unimplemented!()
 			}
 		}
 	}
