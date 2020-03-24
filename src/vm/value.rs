@@ -74,29 +74,31 @@ impl Value {
 			p.mark()
 		}
 	}
+	
+	pub fn repr(&self) -> String {
+		match self.get_type() {
+			ValueType::Bool => bool::try_from(self).unwrap().to_string(),
+			ValueType::Int => i32::try_from(self).unwrap().to_string(),
+			ValueType::Real => {
+				let r = f64::try_from(self).unwrap();
+				if r.is_finite() {
+					let mut buf = Vec::new();
+					dtoa::write(&mut buf, r).unwrap();
+					String::from_utf8(buf).unwrap()
+				} else {
+					format!("{}", r)
+				}
+			},
+			ValueType::Nil => "nil".to_string(),
+			ValueType::Root | ValueType::Ref => self.get_pointer().unwrap().debug(),
+		}
+	}
 }
 
 
 impl fmt::Debug for Value {
 	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-		write!(f, "Value({})",
-			match self.get_type() {
-				ValueType::Bool => bool::try_from(self).unwrap().to_string(),
-				ValueType::Int => i32::try_from(self).unwrap().to_string(),
-				ValueType::Real => {
-					let r = f64::try_from(self).unwrap();
-					if r.is_finite() {
-						let mut buf = Vec::new();
-						dtoa::write(&mut buf, r).unwrap();
-						String::from_utf8(buf).unwrap()
-					} else {
-						format!("{}", r)
-					}
-				},
-				ValueType::Nil => "nil".to_string(),
-				ValueType::Root | ValueType::Ref => self.get_pointer().unwrap().debug(),
-			}
-		)
+		write!(f, "Value({})", self.repr())
 	}
 }
 

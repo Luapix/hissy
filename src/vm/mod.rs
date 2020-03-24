@@ -134,7 +134,7 @@ impl VM<'_> {
 				},
 				InstrType::Log => {
 					let reg = read_u8(&mut it);
-					println!("{:?}", self.registers[reg as usize]);
+					println!("{}", self.registers[reg as usize].repr());
 				},
 			}
 		}

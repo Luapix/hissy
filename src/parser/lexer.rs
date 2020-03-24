@@ -18,11 +18,11 @@ pub enum Token {
 	Newline, Indent, Dedent,
 }
 
-static KEYWORDS: [&'static str; 12] = [
+static KEYWORDS: [&'static str; 13] = [
 	"let", "if", "else", "while",
 	"not", "and", "or",
 	"nil", "true", "false",
-	"return",
+	"return", "log",
 	"fun"
 ];
 

@@ -55,6 +55,7 @@ pub enum Stat {
 	Set(String, Expr),
 	Cond(Vec<Branch>),
 	While(Expr, Vec<Stat>),
+	Log(Expr),
 	Return(Expr),
 }
 

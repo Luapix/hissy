@@ -265,12 +265,13 @@ impl Compiler {
 					emit_jump_to(chunk, begin);
 					chunk.code[placeholder] = compute_jump_from(chunk, block_start);
 				},
-				Stat::Return(e) => {
+				Stat::Log(e) => {
 					let reg = self.compile_expr(chunk, &e, None);
 					self.reg_mgr.free_temp_reg(reg);
-					chunk.emit_instr(InstrType::Log); // Temp
+					chunk.emit_instr(InstrType::Log);
 					chunk.emit_byte(reg);
 				},
+				_ => unimplemented!()
 			}
 		}
 		for reg in self.contexts.last().unwrap().values().copied() {
