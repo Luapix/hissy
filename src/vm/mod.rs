@@ -10,8 +10,10 @@ mod serial;
 pub mod chunk;
 pub mod object;
 
+pub const MAX_REGISTERS: u8 = 128;
+
 use gc::GCHeap;
-use value::{Value, NIL, TRUE, FALSE};
+use value::{Value, NIL};
 use serial::*;
 use chunk::Chunk;
 
@@ -19,7 +21,6 @@ use chunk::Chunk;
 #[repr(u8)]
 pub enum InstrType {
 	Nop,
-	Cst, Nil, True, False,
 	Cpy,
 	Neg, Add, Sub, Mul, Div, Mod, Pow,
 	Not, Or, And,
@@ -47,48 +48,48 @@ impl VM<'_> {
 	pub fn mut_reg(&mut self, reg: u8) -> &mut Value {
 		self.registers.get_mut(reg as usize).expect("Invalid register")
 	}
-	
-	pub fn reg(&self, reg: u8) -> &Value {
-		self.registers.get(reg as usize).expect("Invalid register")
-	}
 
 	pub fn run_chunk(&mut self, chunk: &Chunk) {
 		self.registers = vec![NIL; chunk.nb_registers as usize];
 		
 		let mut it = chunk.code.iter();
 		
+		macro_rules! reg_or_cst {
+			($var:ident, $reg:expr) => {
+				let temp;
+				let reg = $reg;
+				let $var = if reg < MAX_REGISTERS {
+					self.registers.get(usize::try_from(reg).unwrap()).expect("Invalid register")
+				} else {
+					let cst = usize::try_from(255 - reg).unwrap();
+					let value = chunk.constants.get(cst).expect("Invalid constant").clone();
+					temp = value.into_value(&mut self.heap);
+					&temp
+				};
+			};
+		}
+		
 		macro_rules! bin_op {
 			($method:ident) => {{
 				let (a, b, c) = (read_u8(&mut it), read_u8(&mut it), read_u8(&mut it));
-				*self.mut_reg(c) = self.reg(a).$method(&*self.reg(b)).expect(concat!("Cannot '", stringify!($method), "' these values"));
+				reg_or_cst!(a, a);
+				reg_or_cst!(b, b);
+				*self.mut_reg(c) = a.$method(b).expect(concat!("Cannot '", stringify!($method), "' these values"));
 			}};
 		}
 		
 		while let Some(b) = it.next() {
 			match InstrType::try_from(*b).unwrap() {
 				InstrType::Nop => (),
-				InstrType::Cst => {
-					let cst = read_u8(&mut it);
-					let reg = read_u8(&mut it);
-					let value = chunk.constants.get(cst as usize).expect("Invalid constant").clone();
-					*self.mut_reg(reg) = value.into_value(&mut self.heap);
-				},
-				InstrType::Nil => {
-					*self.mut_reg(read_u8(&mut it)) = NIL;
-				},
-				InstrType::True => {
-					*self.mut_reg(read_u8(&mut it)) = TRUE;
-				},
-				InstrType::False => {
-					*self.mut_reg(read_u8(&mut it)) = FALSE;
-				},
 				InstrType::Cpy => {
 					let (rin, rout) = (read_u8(&mut it), read_u8(&mut it));
-					*self.mut_reg(rout) = self.reg(rin).clone();
+					reg_or_cst!(rin, rin);
+					*self.mut_reg(rout) = rin.clone();
 				},
 				InstrType::Neg => {
 					let (rin, rout) = (read_u8(&mut it), read_u8(&mut it));
-					*self.mut_reg(rout) = self.reg(rin).neg().expect("Cannot negate value");
+					reg_or_cst!(rin, rin);
+					*self.mut_reg(rout) = rin.neg().expect("Cannot negate value");
 				},
 				InstrType::Add => bin_op!(add),
 				InstrType::Sub => bin_op!(sub),
@@ -98,17 +99,22 @@ impl VM<'_> {
 				InstrType::Mod => bin_op!(modulo),
 				InstrType::Not => {
 					let (rin, rout) = (read_u8(&mut it), read_u8(&mut it));
-					*self.mut_reg(rout) = self.reg(rin).not().expect("Cannot apply logical NOT to value");
+					reg_or_cst!(rin, rin);
+					*self.mut_reg(rout) = rin.not().expect("Cannot apply logical NOT to value");
 				},
 				InstrType::Or => bin_op!(or),
 				InstrType::And => bin_op!(and),
 				InstrType::Eq => {
 					let (a, b, c) = (read_u8(&mut it), read_u8(&mut it), read_u8(&mut it));
-					*self.mut_reg(c) = Value::from(self.reg(a).eq(&*self.reg(b)));
+					reg_or_cst!(a, a);
+					reg_or_cst!(b, b);
+					*self.mut_reg(c) = Value::from(a.eq(b));
 				},
 				InstrType::Neq => {
 					let (a, b, c) = (read_u8(&mut it), read_u8(&mut it), read_u8(&mut it));
-					*self.mut_reg(c) = Value::from(!self.reg(a).eq(&*self.reg(b)));
+					reg_or_cst!(a, a);
+					reg_or_cst!(b, b);
+					*self.mut_reg(c) = Value::from(!a.eq(b));
 				},
 				InstrType::Lth => bin_op!(lth),
 				InstrType::Leq => bin_op!(leq),
@@ -120,21 +126,23 @@ impl VM<'_> {
 				},
 				InstrType::Jit => {
 					let rel_jmp = read_i8(&mut it);
-					let cond_value = self.reg(read_u8(&mut it));
-					if bool::try_from(cond_value).expect("Non-bool used in condition") {
+					reg_or_cst!(cond_val, read_u8(&mut it));
+					let cond = bool::try_from(cond_val).expect("Non-bool used in condition");
+					if cond {
 						it = compute_jump(isize::try_from(rel_jmp).unwrap(), &chunk.code, &it);
 					}
 				},
 				InstrType::Jif => {
 					let rel_jmp = read_i8(&mut it);
-					let cond_value = self.reg(read_u8(&mut it));
-					if !bool::try_from(cond_value).expect("Non-bool used in condition") {
+					reg_or_cst!(cond_val, read_u8(&mut it));
+					let cond = bool::try_from(cond_val).expect("Non-bool used in condition");
+					if !cond {
 						it = compute_jump(isize::try_from(rel_jmp).unwrap(), &chunk.code, &it);
 					}
 				},
 				InstrType::Log => {
-					let reg = read_u8(&mut it);
-					println!("{}", self.registers[reg as usize].repr());
+					reg_or_cst!(v, read_u8(&mut it));
+					println!("{}", v.repr());
 				},
 			}
 		}

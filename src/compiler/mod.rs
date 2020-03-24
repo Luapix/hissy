@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 
 use super::parser::{parse, ast::{Expr, Stat, Cond, BinOp, UnaOp}};
-use super::vm::{chunk::{Chunk, ChunkConstant}, InstrType};
+use super::vm::{MAX_REGISTERS, chunk::{Chunk, ChunkConstant}, InstrType};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum RegContent {
@@ -43,7 +43,7 @@ impl RegisterManager {
 	}
 	
 	pub fn new_reg(&mut self) -> u8 {
-		let new_reg = self.next_free_reg.try_into()
+		let new_reg = self.next_free_reg.try_into().ok().filter(|r| *r < MAX_REGISTERS)
 			.expect("Cannot compile: Too many registers required");
 		if new_reg as u16 + 1 > self.reg_cnt {
 			self.reg_cnt = new_reg as u16 + 1;
@@ -72,7 +72,7 @@ impl RegisterManager {
 	
 	// Marks register as freed if temporary
 	pub fn free_temp_reg(&mut self, i: u8) {
-		if self.used_registers[&i] == RegContent::Temp {
+		if i < MAX_REGISTERS && self.used_registers[&i] == RegContent::Temp {
 			self.free_reg(i);
 		}
 	}
@@ -101,47 +101,32 @@ impl Compiler {
 		None
 	}
 	
-	// Compile loading of ChunkConstant into dest
-	// Returns final register
-	fn compile_constant(&mut self, chunk: &mut Chunk, val: ChunkConstant, dest: Option<u8>) -> u8 {
+	// Adds constant to the list of constants in the chunk, and return the constant's register index
+	fn compile_constant(&mut self, chunk: &mut Chunk, val: ChunkConstant) -> u8 {
 		chunk.constants.push(val);
-		chunk.emit_instr(InstrType::Cst);
-		chunk.emit_byte((chunk.constants.len() - 1).try_into()
-			.expect("Too many constants required"));
-		self.reg_mgr.emit_reg(chunk, dest)
+		let cst_idx = isize::try_from(chunk.constants.len() - 1).unwrap();
+		let reg = 255 - cst_idx;
+		reg.try_into().ok().filter(|r| *r >= MAX_REGISTERS).expect("Too many constants required")
 	}
 	
-	// Compile computation of expr into dest
-	// Returns final register
-	// Warning: Do not assume final register is a temporary, it may be a local!
+	// Compile computation of expr (into dest if given), and returns final register
+	// Warning: If no dest is given, do not assume the final register is a new, temporary one,
+	// it may be a local or a constant!
 	fn compile_expr(&mut self, chunk: &mut Chunk, expr: &Expr, dest: Option<u8>) -> u8 {
-		match expr {
-			Expr::Nil => {
-				chunk.emit_instr(InstrType::Nil);
-				self.reg_mgr.emit_reg(chunk, dest)
-			},
-			Expr::Bool(b) => {
-				chunk.emit_instr(if *b {InstrType::True} else {InstrType::False});
-				self.reg_mgr.emit_reg(chunk, dest)
-			},
+		let mut needs_copy = true;
+		let mut reg = match expr {
+			Expr::Nil =>
+				self.compile_constant(chunk, ChunkConstant::Nil),
+			Expr::Bool(b) =>
+				self.compile_constant(chunk, ChunkConstant::Bool(*b)),
 			Expr::Int(i) =>
-				self.compile_constant(chunk, ChunkConstant::Int(*i), dest),
+				self.compile_constant(chunk, ChunkConstant::Int(*i)),
 			Expr::Real(r) =>
-				self.compile_constant(chunk, ChunkConstant::Real(*r), dest),
+				self.compile_constant(chunk, ChunkConstant::Real(*r)),
 			Expr::String(s) => 
-				self.compile_constant(chunk, ChunkConstant::Str(s.clone()), dest),
-			Expr::Id(s) => {
-				let src = self.find_local(s).expect("Referencing undefined local");
-				match dest {
-					Some(dest) if dest != src => {
-						chunk.emit_instr(InstrType::Cpy);
-						chunk.emit_byte(src);
-						chunk.emit_byte(dest);
-						dest
-					},
-					_ => src
-				}
-			},
+				self.compile_constant(chunk, ChunkConstant::String(s.clone())),
+			Expr::Id(s) =>
+				self.find_local(s).expect("Referencing undefined local"),
 			Expr::BinOp(op, e1, e2) => {
 				let r1 = self.compile_expr(chunk, &e1, None);
 				let r2 = self.compile_expr(chunk, &e2, None);
@@ -166,6 +151,7 @@ impl Compiler {
 				chunk.emit_instr(instr);
 				chunk.emit_byte(r1);
 				chunk.emit_byte(r2);
+				needs_copy = false;
 				self.reg_mgr.emit_reg(chunk, dest)
 			},
 			Expr::UnaOp(op, e) => {
@@ -177,11 +163,22 @@ impl Compiler {
 				};
 				chunk.emit_instr(instr);
 				chunk.emit_byte(r);
+				needs_copy = false;
 				self.reg_mgr.emit_reg(chunk, dest)
-			}
-			
+			},
 			_ => unimplemented!("Unimplemented expression type: {:?}", expr),
+		};
+		
+		if needs_copy {
+			if let Some(dest) = dest {
+				chunk.emit_instr(InstrType::Cpy);
+				chunk.emit_byte(reg);
+				chunk.emit_byte(dest);
+				reg = dest;
+			}
 		}
+		
+		reg
 	}
 	
 	fn compile_block(&mut self, chunk: &mut Chunk, stats: Vec<Stat>) {

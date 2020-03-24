@@ -2,31 +2,47 @@
 use std::path::Path;
 use std::convert::TryFrom;
 use std::fs;
+use std::slice;
 
-use super::{InstrType, InstrType::*, value::Value, gc::GCHeap, serial::*};
+use super::{MAX_REGISTERS, InstrType, InstrType::*, value::{NIL, TRUE, FALSE, Value}, gc::GCHeap, serial::*};
 
 
 #[derive(TryFromPrimitive)]
 #[repr(u8)]
 pub enum ConstantType {
+	Nil,
+	Bool,
 	Int,
 	Real,
 	String,
 }
 
-#[derive(Debug)]
 pub enum ChunkConstant {
+	Nil,
+	Bool(bool),
 	Int(i32),
 	Real(f64),
-	Str(String),
+	String(String),
 }
 
 impl ChunkConstant {
 	pub fn into_value(&self, heap: &mut GCHeap) -> Value {
 		match self {
+			ChunkConstant::Nil => NIL,
+			ChunkConstant::Bool(b) => if *b { TRUE } else { FALSE },
 			ChunkConstant::Int(i) => Value::from(*i),
 			ChunkConstant::Real(r) => Value::from(*r),
-			ChunkConstant::Str(s) => heap.make_value(s.clone()),
+			ChunkConstant::String(s) => heap.make_value(s.clone()),
+		}
+	}
+	
+	fn repr(&self) -> String {
+		match self {
+			ChunkConstant::Nil => String::from("nil"),
+			ChunkConstant::Bool(b) => String::from(if *b { "true" } else { "false" }),
+			ChunkConstant::Int(i) => format!("{}", *i),
+			ChunkConstant::Real(r) => format!("{}", *r),
+			ChunkConstant::String(s) => format!("{:?}", s),
 		}
 	}
 }
@@ -53,12 +69,14 @@ impl Chunk {
 		for _ in 0..nb_constants {
 			let t = ConstantType::try_from(read_u8(&mut it)).expect("Unrecognized constant type");
 			let value = match t {
+				ConstantType::Nil => ChunkConstant::Nil,
+				ConstantType::Bool => ChunkConstant::Bool(read_u8(&mut it) != 0),
 				ConstantType::Int => ChunkConstant::Int(read_i32(&mut it)),
 				ConstantType::Real => ChunkConstant::Real(read_f64(&mut it)),
 				ConstantType::String => {
 					let length = read_u16(&mut it) as usize;
 					let s = String::from_utf8(it.by_ref().take(length).copied().collect()).expect("Invalid UTF8 in string constant");
-					ChunkConstant::Str(s)
+					ChunkConstant::String(s)
 				},
 			};
 			chunk.constants.push(value);
@@ -73,6 +91,13 @@ impl Chunk {
 		bytes.extend(&u16::try_from(self.constants.len()).unwrap().to_le_bytes());
 		for cst in &self.constants {
 			match cst {
+				ChunkConstant::Nil => {
+					bytes.push(ConstantType::Nil as u8);
+				},
+				ChunkConstant::Bool(b) => {
+					bytes.push(ConstantType::Bool as u8);
+					bytes.push(if *b { 1 } else { 0 });
+				},
 				ChunkConstant::Int(i) => {
 					bytes.push(ConstantType::Int as u8);
 					bytes.extend(&i.to_le_bytes());
@@ -81,7 +106,7 @@ impl Chunk {
 					bytes.push(ConstantType::Real as u8);
 					bytes.extend(&r.to_le_bytes());
 				},
-				ChunkConstant::Str(s) => {
+				ChunkConstant::String(s) => {
 					bytes.push(ConstantType::String as u8);
 					bytes.extend(&u16::try_from(s.len()).unwrap().to_le_bytes());
 					bytes.extend(s.as_bytes());
@@ -100,46 +125,49 @@ impl Chunk {
 		self.code.push(byte);
 	}
 	
+	fn format_reg(&self, it: &mut slice::Iter<u8>) -> String {
+		let reg = *it.next().unwrap();
+		if reg < MAX_REGISTERS {
+			format!("r{}", reg)
+		} else {
+			let cst = usize::try_from(255 - reg).unwrap();
+			format!("{}", self.constants[cst].repr())
+		}
+	}
+	
 	pub fn disassemble(&self) -> String {
 		let mut s = String::new();
-		s += "[Chunk]\n";
-		s += &format!("{} registers\n\n", self.nb_registers);
+		s += &format!("{} registers; {} constants\n", self.nb_registers, self.constants.len());
+		s += "[pos]\t[instr]\n";
 		
-		s += "Constants:\n";
-		for (i, cst) in self.constants.iter().enumerate() {
-			s += &format!("{}: {:?}\n", i, cst);
-		}
-		s += "\n";
-		
-		s += "Code:\n";
 		let mut it = self.code.iter();
 		let mut pos = 0;
 		while let Some(b) = it.next() {
 			let instr = InstrType::try_from(*b).unwrap();
-			s += &format!("{}| {:?}(", pos, instr);
+			s += &format!("{}\t{:?}(", pos, instr);
 			match instr {
 				Nop => {},
-				Nil | True | False | Log => {
-					s += &format!("{}", it.next().unwrap());
+				Log => {
+					s += &format!("{}", self.format_reg(&mut it));
 				},
-				Cst | Cpy | Neg | Not => {
-					s += &format!("{}, {}", it.next().unwrap(), it.next().unwrap());
+				Cpy | Neg | Not => {
+					s += &format!("{}, {}", self.format_reg(&mut it), self.format_reg(&mut it));
 				},
 				Add | Sub | Mul | Div | Mod | Pow | Or | And
 					| Eq | Neq | Lth | Leq | Gth | Geq => {
-					s += &format!("{}, {}, {}", it.next().unwrap(), it.next().unwrap(), it.next().unwrap());
+					s += &format!("{}, {}, {}", self.format_reg(&mut it), self.format_reg(&mut it), self.format_reg(&mut it));
 				},
 				Jmp => {
 					s += &format!("{}", i8::from_le_bytes([*it.next().unwrap()]));
 				},
 				Jit | Jif => {
-					s += &format!("{}, {}", i8::from_le_bytes([*it.next().unwrap()]), it.next().unwrap());
+					s += &format!("{}, {}", i8::from_le_bytes([*it.next().unwrap()]), self.format_reg(&mut it));
 				},
 			}
 			s += ")\n";
 			pos = self.code.len() - it.len();
 		}
-		s += &format!("{}|\n", pos);
+		s += &format!("{}\n", pos);
 		
 		s
 	}
