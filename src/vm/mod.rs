@@ -136,7 +136,6 @@ impl VM<'_> {
 					let reg = read_u8(&mut it);
 					println!("{:?}", self.registers[reg as usize]);
 				},
-				_ => unimplemented!()
 			}
 		}
 	}

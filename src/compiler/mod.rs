@@ -2,7 +2,7 @@
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 
-use super::parser::{parse, ast::{Expr, Stat, BinOp, UnaOp}};
+use super::parser::{parse, ast::{Expr, Stat, Cond, BinOp, UnaOp}};
 use super::vm::{chunk::{Chunk, ChunkConstant}, InstrType};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -185,6 +185,7 @@ impl Compiler {
 	}
 	
 	fn compile_block(&mut self, chunk: &mut Chunk, stats: Vec<Stat>) {
+		let used_before = self.reg_mgr.used_registers.len();
 		self.contexts.push(HashMap::new());
 		for stat in stats {
 			match stat {
@@ -205,37 +206,80 @@ impl Compiler {
 					let reg = self.find_local(&id).expect("Referencing undefined local");
 					self.compile_expr(chunk, &e, Some(reg));
 				},
+				Stat::Cond(branches) => {
+					let mut last_jmp = None;
+					let mut end_jmps = vec![];
+					for (cond, bl) in branches {
+						if let Some((placeholder, from)) = last_jmp {
+							// Fill in jump from previous branch
+							chunk.code[placeholder] = compute_jump_from(chunk, from);
+						}
+						
+						match cond {
+							Cond::If(e) => {
+								let cond_reg = self.compile_expr(chunk, &e, None);
+								
+								// Jump to next branch if false
+								self.reg_mgr.free_temp_reg(cond_reg);
+								chunk.emit_instr(InstrType::Jif);
+								let placeholder = chunk.code.len();
+								chunk.emit_byte(0); // Placeholder
+								chunk.emit_byte(cond_reg);
+								let from = chunk.code.len();
+								last_jmp = Some((placeholder, from));
+								
+								self.compile_block(chunk, bl);
+								
+								// Jump out of condition at end of block
+								chunk.emit_instr(InstrType::Jmp);
+								let placeholder = chunk.code.len();
+								chunk.emit_byte(0); // Placeholder 2
+								let from = chunk.code.len();
+								end_jmps.push((placeholder, from));
+							},
+							Cond::Else => {
+								self.compile_block(chunk, bl);
+							}
+						}
+					}
+					
+					// Fill in jumps to end
+					for (placeholder, from) in end_jmps {
+						chunk.code[placeholder] = compute_jump_from(chunk, from);
+					}
+				},
 				Stat::While(e, bl) => {
 					let begin = chunk.code.len();
 					let cond_reg = self.compile_expr(chunk, &e, None);
+					
 					self.reg_mgr.free_temp_reg(cond_reg);
 					chunk.emit_instr(InstrType::Jif);
 					let placeholder = chunk.code.len();
 					chunk.emit_byte(0); // Placeholder
 					chunk.emit_byte(cond_reg);
 					let block_start = chunk.code.len();
+					
 					self.compile_block(chunk, bl);
-					debug_assert!(!self.reg_mgr.used_registers.contains_key(&cond_reg),
-						"Register not freed at end of block conflicts with 'while' condition evaluation");
-					// Check that the register which will be used (after the jump) for re-evaluating
-					// the loop condition hasn't been used up by the block compilation.
-					// This should never happen as long as all temporaries and locals are freed correctly.
+					
 					chunk.emit_instr(InstrType::Jmp);
 					emit_jump_to(chunk, begin);
 					chunk.code[placeholder] = compute_jump_from(chunk, block_start);
 				},
 				Stat::Return(e) => {
 					let reg = self.compile_expr(chunk, &e, None);
+					self.reg_mgr.free_temp_reg(reg);
 					chunk.emit_instr(InstrType::Log); // Temp
 					chunk.emit_byte(reg);
 				},
-				_ => unimplemented!("Unimplemented instruction type: {:?}", stat),
 			}
 		}
 		for reg in self.contexts.last().unwrap().values().copied() {
 			self.reg_mgr.free_reg(reg);
 		}
 		self.contexts.pop();
+		
+		debug_assert!(used_before == self.reg_mgr.used_registers.len(), "Leaked register");
+		// Basic check to make sure no registers have been "leaked"
 	}
 	
 	pub fn compile_chunk(&mut self, input: &str) -> Result<Chunk, String> {

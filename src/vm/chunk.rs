@@ -135,7 +135,6 @@ impl Chunk {
 				Jit | Jif => {
 					s += &format!("{}, {}", i8::from_le_bytes([*it.next().unwrap()]), it.next().unwrap());
 				},
-				_ => unimplemented!()
 			}
 			s += ")\n";
 			pos = self.code.len() - it.len();
