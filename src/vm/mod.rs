@@ -34,10 +34,14 @@ pub struct VM<'a> {
 	registers: Vec<Value>,
 }
 
-fn compute_jump<'a>(rel_jmp: isize, code: &'a Vec<u8>, it: &slice::Iter<'a, u8>) -> slice::Iter<'a, u8> {
-	let pos = code.len() - it.len();
-	let final_pos = usize::try_from(pos as isize + rel_jmp).expect("Jumped back too far");
-	code.get(final_pos..).expect("Jumped forward too far").iter()
+fn read_rel_add<'a>(mut it: &mut slice::Iter<'a, u8>, code: &'a Vec<u8>) -> usize {
+	let pos = isize::try_from(code.len() - it.len()).unwrap();
+	let rel_add = isize::from(read_i8(&mut it));
+	usize::try_from(pos + rel_add).expect("Jumped back too far")
+}
+
+fn iter_from<'a>(code: &'a Vec<u8>, pos: usize) -> slice::Iter<'a, u8> {
+	code.get(pos..).expect("Jumped forward too far").iter()
 }
 
 impl VM<'_> {
@@ -121,23 +125,23 @@ impl VM<'_> {
 				InstrType::Gth => bin_op!(gth),
 				InstrType::Geq => bin_op!(geq),
 				InstrType::Jmp => {
-					let rel_jmp = read_i8(&mut it);
-					it = compute_jump(isize::try_from(rel_jmp).unwrap(), &chunk.code, &it);
+					let final_add = read_rel_add(&mut it, &chunk.code);
+					it = iter_from(&chunk.code, final_add);
 				},
 				InstrType::Jit => {
-					let rel_jmp = read_i8(&mut it);
+					let final_add = read_rel_add(&mut it, &chunk.code);
 					reg_or_cst!(cond_val, read_u8(&mut it));
 					let cond = bool::try_from(cond_val).expect("Non-bool used in condition");
 					if cond {
-						it = compute_jump(isize::try_from(rel_jmp).unwrap(), &chunk.code, &it);
+						it = iter_from(&chunk.code, final_add);
 					}
 				},
 				InstrType::Jif => {
-					let rel_jmp = read_i8(&mut it);
+					let final_add = read_rel_add(&mut it, &chunk.code);
 					reg_or_cst!(cond_val, read_u8(&mut it));
 					let cond = bool::try_from(cond_val).expect("Non-bool used in condition");
 					if !cond {
-						it = compute_jump(isize::try_from(rel_jmp).unwrap(), &chunk.code, &it);
+						it = iter_from(&chunk.code, final_add);
 					}
 				},
 				InstrType::Log => {

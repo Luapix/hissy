@@ -12,19 +12,19 @@ pub enum RegContent {
 }
 
 fn emit_jump_to(chunk: &mut Chunk, add: usize) {
-	let from = chunk.code.len() + 1;
+	let from = chunk.code.len();
 	let to = add;
 	let rel_jmp = to as isize - from as isize;
 	let rel_jmp = i8::try_from(rel_jmp).expect("Jump too large");
 	chunk.emit_byte(rel_jmp as u8);
 }
 
-fn compute_jump_from(chunk: &mut Chunk, add: usize) -> u8 {
+fn fill_in_jump_from(chunk: &mut Chunk, add: usize) {
 	let from = add;
 	let to = chunk.code.len();
 	let rel_jmp = to as isize - from as isize;
 	let rel_jmp = i8::try_from(rel_jmp).expect("Jump too large");
-	rel_jmp as u8
+	chunk.code[add] = rel_jmp as u8;
 }
 
 pub struct RegisterManager {
@@ -207,9 +207,9 @@ impl Compiler {
 					let mut last_jmp = None;
 					let mut end_jmps = vec![];
 					for (cond, bl) in branches {
-						if let Some((placeholder, from)) = last_jmp {
+						if let Some(from) = last_jmp {
 							// Fill in jump from previous branch
-							chunk.code[placeholder] = compute_jump_from(chunk, from);
+							fill_in_jump_from(chunk, from);
 						}
 						
 						match cond {
@@ -219,20 +219,18 @@ impl Compiler {
 								// Jump to next branch if false
 								self.reg_mgr.free_temp_reg(cond_reg);
 								chunk.emit_instr(InstrType::Jif);
-								let placeholder = chunk.code.len();
+								let from = chunk.code.len();
 								chunk.emit_byte(0); // Placeholder
 								chunk.emit_byte(cond_reg);
-								let from = chunk.code.len();
-								last_jmp = Some((placeholder, from));
+								last_jmp = Some(from);
 								
 								self.compile_block(chunk, bl);
 								
 								// Jump out of condition at end of block
 								chunk.emit_instr(InstrType::Jmp);
-								let placeholder = chunk.code.len();
-								chunk.emit_byte(0); // Placeholder 2
 								let from = chunk.code.len();
-								end_jmps.push((placeholder, from));
+								chunk.emit_byte(0); // Placeholder 2
+								end_jmps.push(from);
 							},
 							Cond::Else => {
 								self.compile_block(chunk, bl);
@@ -241,8 +239,8 @@ impl Compiler {
 					}
 					
 					// Fill in jumps to end
-					for (placeholder, from) in end_jmps {
-						chunk.code[placeholder] = compute_jump_from(chunk, from);
+					for from in end_jmps {
+						fill_in_jump_from(chunk, from);
 					}
 				},
 				Stat::While(e, bl) => {
@@ -254,13 +252,12 @@ impl Compiler {
 					let placeholder = chunk.code.len();
 					chunk.emit_byte(0); // Placeholder
 					chunk.emit_byte(cond_reg);
-					let block_start = chunk.code.len();
 					
 					self.compile_block(chunk, bl);
 					
 					chunk.emit_instr(InstrType::Jmp);
 					emit_jump_to(chunk, begin);
-					chunk.code[placeholder] = compute_jump_from(chunk, block_start);
+					fill_in_jump_from(chunk, placeholder);
 				},
 				Stat::Log(e) => {
 					let reg = self.compile_expr(chunk, &e, None);

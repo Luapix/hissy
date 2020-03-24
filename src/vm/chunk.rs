@@ -135,6 +135,12 @@ impl Chunk {
 		}
 	}
 	
+	fn format_rel_add(&self, it: &mut slice::Iter<u8>) -> String {
+		let pos = isize::try_from(self.code.len() - it.len()).unwrap();
+		let rel_add = isize::from(i8::from_le_bytes([*it.next().unwrap()]));
+		format!("@{}", pos + rel_add)
+	}
+	
 	pub fn disassemble(&self) -> String {
 		let mut s = String::new();
 		s += &format!("{} registers; {} constants\n", self.nb_registers, self.constants.len());
@@ -158,10 +164,10 @@ impl Chunk {
 					s += &format!("{}, {}, {}", self.format_reg(&mut it), self.format_reg(&mut it), self.format_reg(&mut it));
 				},
 				Jmp => {
-					s += &format!("{}", i8::from_le_bytes([*it.next().unwrap()]));
+					s += &format!("{}", self.format_rel_add(&mut it));
 				},
 				Jit | Jif => {
-					s += &format!("{}, {}", i8::from_le_bytes([*it.next().unwrap()]), self.format_reg(&mut it));
+					s += &format!("{}, {}", self.format_rel_add(&mut it), self.format_reg(&mut it));
 				},
 			}
 			s += ")\n";
