@@ -113,6 +113,8 @@ impl Chunk {
 				},
 			}
 		}
+		
+		bytes.extend(&u16::try_from(self.code.len()).unwrap().to_le_bytes());
 		bytes.extend(&self.code);
 	}
 	
