@@ -277,8 +277,8 @@ impl ChunkCompiler {
 		// Basic check to make sure no registers have been "leaked"
 	}
 	
-	fn compile_chunk(mut self, ast: Vec<Stat>) -> Chunk {
-		let mut chunk = Chunk::new();
+	fn compile_chunk(mut self, name: String, ast: Vec<Stat>) -> Chunk {
+		let mut chunk = Chunk::new(name);
 		self.compile_block(&mut chunk, ast);
 		chunk.nb_registers = self.reg_mgr.reg_cnt;
 		chunk
@@ -296,7 +296,7 @@ impl Compiler {
 	
 	pub fn compile_program(&mut self, input: &str) -> Result<Program, String> {
 		let ast = parse(input)?;
-		let main = ChunkCompiler::new().compile_chunk(ast);
+		let main = ChunkCompiler::new().compile_chunk(String::from("main"), ast);
 		Ok(Program { main: main })
 	}
 }

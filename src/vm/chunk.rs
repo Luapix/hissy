@@ -50,6 +50,7 @@ impl ChunkConstant {
 
 
 pub struct Chunk {
+	pub name: String,
 	pub nb_registers: u16,
 	pub constants: Vec<ChunkConstant>,
 	pub code: Vec<u8>,
@@ -57,12 +58,13 @@ pub struct Chunk {
 
 
 impl Chunk {
-	pub fn new() -> Chunk {
-		Chunk { nb_registers: 0, constants: vec![], code: vec![] }
+	pub fn new(name: String) -> Chunk {
+		Chunk { name: name, nb_registers: 0, constants: vec![], code: vec![] }
 	}
 	
 	pub fn from_bytes(it: &mut slice::Iter<u8>) -> Chunk {
-		let mut chunk = Chunk::new();
+		let mut chunk = Chunk::new(read_small_str(it));
+		
 		chunk.nb_registers = read_u16(it);
 		let nb_constants = read_u16(it);
 		for _ in 0..nb_constants {
@@ -72,19 +74,19 @@ impl Chunk {
 				ConstantType::Bool => ChunkConstant::Bool(read_u8(it) != 0),
 				ConstantType::Int => ChunkConstant::Int(read_i32(it)),
 				ConstantType::Real => ChunkConstant::Real(read_f64(it)),
-				ConstantType::String => {
-					let length = read_u16(it) as usize;
-					let s = String::from_utf8(it.by_ref().take(length).copied().collect()).expect("Invalid UTF8 in string constant");
-					ChunkConstant::String(s)
-				},
+				ConstantType::String => ChunkConstant::String(read_str(it)),
 			};
 			chunk.constants.push(value);
 		}
-		chunk.code.extend(&it.copied().collect::<Vec<u8>>());
+		let code_size = usize::from(read_u16(it));
+		chunk.code.extend(&it.take(code_size).copied().collect::<Vec<u8>>());
 		chunk
 	}
 	
 	pub fn to_bytes(&self, bytes: &mut Vec<u8>) {
+		bytes.extend(&u8::try_from(self.name.len()).unwrap().to_le_bytes());
+		bytes.extend(self.name.as_bytes());
+		
 		bytes.extend(&self.nb_registers.to_le_bytes());
 		bytes.extend(&u16::try_from(self.constants.len()).unwrap().to_le_bytes());
 		for cst in &self.constants {
@@ -139,7 +141,8 @@ impl Chunk {
 	}
 	
 	pub fn disassemble(&self, s: &mut String) {
-		s.push_str(&format!("({} registers; {} constants)\n", self.nb_registers, self.constants.len()));
+		s.push_str(&format!("[Chunk '{}'] ({} registers; {} constants)\n",
+			self.name, self.nb_registers, self.constants.len()));
 		
 		let mut it = self.code.iter();
 		let mut pos = 0;
@@ -181,7 +184,11 @@ impl Program {
 		let contents = fs::read(path).expect("Unable to read chunk");
 		
 		let mut it = contents.iter();
-		let main = Chunk::from_bytes(&mut it);
+		let mut chunks = vec![];
+		while it.len() > 0 {
+			chunks.push(Chunk::from_bytes(&mut it));
+		}
+		let main = chunks.remove(0);
 		
 		Program { main: main }
 	}
@@ -195,7 +202,6 @@ impl Program {
 	pub fn disassemble(&self) -> String {
 		let mut s = String::new();
 		
-		s.push_str("[Main chunk]\n");
 		self.main.disassemble(&mut s);
 		s
 	}

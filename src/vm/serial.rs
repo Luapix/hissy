@@ -22,3 +22,15 @@ pub fn read_f64<'a>(it: &mut impl Iterator<Item = &'a u8>) -> f64 {
 	for i in 0..8 { bytes[i] = read_u8(it); }
 	f64::from_le_bytes(bytes)
 }
+
+pub fn read_small_str<'a>(it: &mut impl Iterator<Item = &'a u8>) -> String {
+	let length = read_u8(it) as usize;
+	let s = String::from_utf8(it.by_ref().take(length).copied().collect()).expect("Invalid UTF8 in string");
+	s
+}
+
+pub fn read_str<'a>(it: &mut impl Iterator<Item = &'a u8>) -> String {
+	let length = read_u16(it) as usize;
+	let s = String::from_utf8(it.by_ref().take(length).copied().collect()).expect("Invalid UTF8 in string");
+	s
+}
