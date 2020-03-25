@@ -5,7 +5,7 @@ use std::path::Path;
 use hissy::parser::lexer::{Tokens, read_tokens};
 use hissy::parser;
 use hissy::parser::{ast::ProgramAST};
-use hissy::vm::{VM, gc::GCHeap, chunk::Program};
+use hissy::vm::{run_program, gc::GCHeap, chunk::Program};
 use hissy::compiler::Compiler;
 use hissy::{format_error, display_result, debug_result, display_error};
 
@@ -39,8 +39,7 @@ fn interpret(file: &str) -> Result<(), String> {
 	
 	let mut heap = GCHeap::new();
 	{
-		let mut vm = VM::new(&mut heap);
-		vm.run_program(&program);
+		run_program(&mut heap, &program);
 	}
 	heap.collect();
 	Ok(())
@@ -51,8 +50,7 @@ fn run(file: &str) -> Result<(), String> {
 	
 	let mut heap = GCHeap::new();
 	{
-		let mut vm = VM::new(&mut heap);
-		vm.run_program(&program);
+		run_program(&mut heap, &program);
 	}
 	heap.collect();
 	Ok(())

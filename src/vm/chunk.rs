@@ -178,7 +178,7 @@ impl Chunk {
 }
 
 pub struct Program {
-	pub main: Chunk,
+	pub chunks: Vec<Chunk>,
 }
 
 impl Program {
@@ -190,21 +190,24 @@ impl Program {
 		while it.len() > 0 {
 			chunks.push(Chunk::from_bytes(&mut it));
 		}
-		let main = chunks.remove(0);
 		
-		Program { main: main }
+		Program { chunks: chunks }
 	}
 	
 	pub fn to_file<T: AsRef<Path>>(&self, path: T) -> std::io::Result<()> {
 		let mut bytes = vec![];
-		self.main.to_bytes(&mut bytes);
+		for chunk in &self.chunks {
+			chunk.to_bytes(&mut bytes);
+		}
 		fs::write(path, &bytes)
 	}
 	
 	pub fn disassemble(&self) -> String {
 		let mut s = String::new();
 		
-		self.main.disassemble(&mut s);
+		for chunk in &self.chunks {
+			chunk.disassemble(&mut s);
+		}
 		s
 	}
 }

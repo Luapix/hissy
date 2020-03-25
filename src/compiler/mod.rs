@@ -297,6 +297,7 @@ impl Compiler {
 	pub fn compile_program(&mut self, input: &str) -> Result<Program, String> {
 		let ast = parse(input)?;
 		let main = ChunkCompiler::new().compile_chunk(String::from("main"), ast);
-		Ok(Program { main: main })
+		let chunks = vec![ main ];
+		Ok(Program { chunks: chunks })
 	}
 }
