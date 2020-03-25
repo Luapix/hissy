@@ -79,14 +79,14 @@ impl RegisterManager {
 }
 
 
-pub struct Compiler {
+struct ChunkCompiler {
 	reg_mgr: RegisterManager,
 	contexts: Vec<HashMap<String, u8>>,
 }
 
-impl Compiler {
-	pub fn new() -> Compiler {
-		Compiler {
+impl ChunkCompiler {
+	pub fn new() -> ChunkCompiler {
+		ChunkCompiler {
 			reg_mgr: RegisterManager::new(),
 			contexts: Vec::new(),
 		}
@@ -277,17 +277,26 @@ impl Compiler {
 		// Basic check to make sure no registers have been "leaked"
 	}
 	
-	fn compile_chunk(&mut self, chunk: &mut Chunk, ast: Vec<Stat>) {
-		self.compile_block(chunk, ast);
+	fn compile_chunk(mut self, ast: Vec<Stat>) -> Chunk {
+		let mut chunk = Chunk::new();
+		self.compile_block(&mut chunk, ast);
 		chunk.nb_registers = self.reg_mgr.reg_cnt;
+		chunk
+	}
+}
+
+pub struct Compiler {
+	
+}
+
+impl Compiler {
+	pub fn new() -> Compiler {
+		Compiler { }
 	}
 	
 	pub fn compile_program(&mut self, input: &str) -> Result<Program, String> {
 		let ast = parse(input)?;
-		let mut program = Program {
-			main: Chunk::new()
-		};
-		self.compile_chunk(&mut program.main, ast);
-		Ok(program)
+		let main = ChunkCompiler::new().compile_chunk(ast);
+		Ok(Program { main: main })
 	}
 }
