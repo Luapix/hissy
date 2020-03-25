@@ -15,7 +15,7 @@ pub const MAX_REGISTERS: u8 = 128;
 use gc::GCHeap;
 use value::{Value, NIL};
 use serial::*;
-use chunk::Chunk;
+use chunk::Program;
 
 #[derive(Debug, TryFromPrimitive)]
 #[repr(u8)]
@@ -34,9 +34,9 @@ pub struct VM<'a> {
 	registers: Vec<Value>,
 }
 
-fn read_rel_add<'a>(mut it: &mut slice::Iter<'a, u8>, code: &'a Vec<u8>) -> usize {
+fn read_rel_add<'a>(it: &mut slice::Iter<'a, u8>, code: &'a Vec<u8>) -> usize {
 	let pos = isize::try_from(code.len() - it.len()).unwrap();
-	let rel_add = isize::from(read_i8(&mut it));
+	let rel_add = isize::from(read_i8(it));
 	usize::try_from(pos + rel_add).expect("Jumped back too far")
 }
 
@@ -53,7 +53,9 @@ impl VM<'_> {
 		self.registers.get_mut(reg as usize).expect("Invalid register")
 	}
 
-	pub fn run_chunk(&mut self, chunk: &Chunk) {
+	pub fn run_program(&mut self, program: &Program) {
+		let chunk = &program.main;
+		
 		self.registers = vec![NIL; chunk.nb_registers as usize];
 		
 		let mut it = chunk.code.iter();
@@ -150,10 +152,5 @@ impl VM<'_> {
 				},
 			}
 		}
-	}
-	
-	pub fn run_bytecode_file(&mut self, path: &str) {
-		let chunk = Chunk::from_file(path);
-		self.run_chunk(&chunk);
 	}
 }

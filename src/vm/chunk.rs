@@ -17,6 +17,7 @@ pub enum ConstantType {
 	String,
 }
 
+#[derive(PartialEq)]
 pub enum ChunkConstant {
 	Nil,
 	Bool(bool),
@@ -60,21 +61,19 @@ impl Chunk {
 		Chunk { nb_registers: 0, constants: vec![], code: vec![] }
 	}
 	
-	pub fn from_file<T: AsRef<Path>>(path: T) -> Chunk {
+	pub fn from_bytes(it: &mut slice::Iter<u8>) -> Chunk {
 		let mut chunk = Chunk::new();
-		let contents = fs::read(path).expect("Unable to read chunk");
-		let mut it = contents.iter();
-		chunk.nb_registers = read_u16(&mut it);
-		let nb_constants = read_u16(&mut it);
+		chunk.nb_registers = read_u16(it);
+		let nb_constants = read_u16(it);
 		for _ in 0..nb_constants {
-			let t = ConstantType::try_from(read_u8(&mut it)).expect("Unrecognized constant type");
+			let t = ConstantType::try_from(read_u8(it)).expect("Unrecognized constant type");
 			let value = match t {
 				ConstantType::Nil => ChunkConstant::Nil,
-				ConstantType::Bool => ChunkConstant::Bool(read_u8(&mut it) != 0),
-				ConstantType::Int => ChunkConstant::Int(read_i32(&mut it)),
-				ConstantType::Real => ChunkConstant::Real(read_f64(&mut it)),
+				ConstantType::Bool => ChunkConstant::Bool(read_u8(it) != 0),
+				ConstantType::Int => ChunkConstant::Int(read_i32(it)),
+				ConstantType::Real => ChunkConstant::Real(read_f64(it)),
 				ConstantType::String => {
-					let length = read_u16(&mut it) as usize;
+					let length = read_u16(it) as usize;
 					let s = String::from_utf8(it.by_ref().take(length).copied().collect()).expect("Invalid UTF8 in string constant");
 					ChunkConstant::String(s)
 				},
@@ -85,8 +84,7 @@ impl Chunk {
 		chunk
 	}
 	
-	pub fn to_file<T: AsRef<Path>>(&self, path: T) -> std::io::Result<()> {
-		let mut bytes = vec![];
+	pub fn to_bytes(&self, bytes: &mut Vec<u8>) {
 		bytes.extend(&self.nb_registers.to_le_bytes());
 		bytes.extend(&u16::try_from(self.constants.len()).unwrap().to_le_bytes());
 		for cst in &self.constants {
@@ -114,7 +112,6 @@ impl Chunk {
 			}
 		}
 		bytes.extend(&self.code);
-		fs::write(path, &bytes)
 	}
 	
 	pub fn emit_instr(&mut self, instr: InstrType) {
@@ -141,40 +138,65 @@ impl Chunk {
 		format!("@{}", pos + rel_add)
 	}
 	
-	pub fn disassemble(&self) -> String {
-		let mut s = String::new();
-		s += &format!("{} registers; {} constants\n", self.nb_registers, self.constants.len());
-		s += "[pos]\t[instr]\n";
+	pub fn disassemble(&self, s: &mut String) {
+		s.push_str(&format!("({} registers; {} constants)\n", self.nb_registers, self.constants.len()));
 		
 		let mut it = self.code.iter();
 		let mut pos = 0;
 		while let Some(b) = it.next() {
 			let instr = InstrType::try_from(*b).unwrap();
-			s += &format!("{}\t{:?}(", pos, instr);
+			s.push_str(&format!("{}\t{:?}(", pos, instr));
 			match instr {
 				Nop => {},
 				Log => {
-					s += &format!("{}", self.format_reg(&mut it));
+					s.push_str(&format!("{}", self.format_reg(&mut it)));
 				},
 				Cpy | Neg | Not => {
-					s += &format!("{}, {}", self.format_reg(&mut it), self.format_reg(&mut it));
+					s.push_str(&format!("{}, {}", self.format_reg(&mut it), self.format_reg(&mut it)));
 				},
 				Add | Sub | Mul | Div | Mod | Pow | Or | And
 					| Eq | Neq | Lth | Leq | Gth | Geq => {
-					s += &format!("{}, {}, {}", self.format_reg(&mut it), self.format_reg(&mut it), self.format_reg(&mut it));
+					s.push_str(&format!("{}, {}, {}", self.format_reg(&mut it), self.format_reg(&mut it), self.format_reg(&mut it)));
 				},
 				Jmp => {
-					s += &format!("{}", self.format_rel_add(&mut it));
+					s.push_str(&format!("{}", self.format_rel_add(&mut it)));
 				},
 				Jit | Jif => {
-					s += &format!("{}, {}", self.format_rel_add(&mut it), self.format_reg(&mut it));
+					s.push_str(&format!("{}, {}", self.format_rel_add(&mut it), self.format_reg(&mut it)));
 				},
 			}
-			s += ")\n";
+			s.push_str(")\n");
 			pos = self.code.len() - it.len();
 		}
-		s += &format!("{}\n", pos);
+		s.push_str(&format!("{}\n", pos));
+	}
+}
+
+pub struct Program {
+	pub main: Chunk,
+}
+
+impl Program {
+	pub fn from_file<T: AsRef<Path>>(path: T) -> Program {
+		let contents = fs::read(path).expect("Unable to read chunk");
 		
+		let mut it = contents.iter();
+		let main = Chunk::from_bytes(&mut it);
+		
+		Program { main: main }
+	}
+	
+	pub fn to_file<T: AsRef<Path>>(&self, path: T) -> std::io::Result<()> {
+		let mut bytes = vec![];
+		self.main.to_bytes(&mut bytes);
+		fs::write(path, &bytes)
+	}
+	
+	pub fn disassemble(&self) -> String {
+		let mut s = String::new();
+		
+		s.push_str("[Main chunk]\n");
+		self.main.disassemble(&mut s);
 		s
 	}
 }

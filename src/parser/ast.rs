@@ -59,4 +59,4 @@ pub enum Stat {
 	Return(Expr),
 }
 
-pub type Program = Vec<Stat>;
+pub type ProgramAST = Vec<Stat>;

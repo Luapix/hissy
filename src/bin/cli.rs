@@ -4,8 +4,8 @@ use std::path::Path;
 
 use hissy::parser::lexer::{Tokens, read_tokens};
 use hissy::parser;
-use hissy::parser::{ast::Program};
-use hissy::vm::{VM, gc::GCHeap, chunk::Chunk};
+use hissy::parser::{ast::ProgramAST};
+use hissy::vm::{VM, gc::GCHeap, chunk::Program};
 use hissy::compiler::Compiler;
 use hissy::{format_error, display_result, debug_result, display_error};
 
@@ -15,7 +15,7 @@ fn lex(file: &str) -> Result<Tokens, String> {
 	format_error(read_tokens(&contents), "Lexer error")
 }
 
-fn parse(file: &str) -> Result<Program, String> {
+fn parse(file: &str) -> Result<ProgramAST, String> {
 	let contents = format_error(read_to_string(file), "Unable to open file")?;
 	format_error(parser::parse(&contents), "Parse error")
 }
@@ -23,34 +23,36 @@ fn parse(file: &str) -> Result<Program, String> {
 fn compile(file: &str) -> Result<(), String> {
 	let code = format_error(read_to_string(file), "Unable to open file")?;
 	let mut compiler = Compiler::new();
-	let chunk = format_error(compiler.compile_chunk(&code), "Compile error")?;
-	format_error(chunk.to_file(Path::new(file).with_extension("hic")), "Compile error")
+	let program = format_error(compiler.compile_program(&code), "Compile error")?;
+	format_error(program.to_file(Path::new(file).with_extension("hic")), "Compile error")
 }
 
 fn list(file: &str) {
-	let chunk = Chunk::from_file(file);
-	println!("{}", chunk.disassemble());
+	let program = Program::from_file(file);
+	println!("{}", program.disassemble());
 }
 
 fn interpret(file: &str) -> Result<(), String> {
 	let code = format_error(read_to_string(file), "Unable to open file")?;
 	let mut compiler = Compiler::new();
-	let chunk = format_error(compiler.compile_chunk(&code), "Compile error")?;
+	let program = format_error(compiler.compile_program(&code), "Compile error")?;
 	
 	let mut heap = GCHeap::new();
 	{
 		let mut vm = VM::new(&mut heap);
-		vm.run_chunk(&chunk);
+		vm.run_program(&program);
 	}
 	heap.collect();
 	Ok(())
 }
 
 fn run(file: &str) -> Result<(), String> {
+	let program = Program::from_file(file);
+	
 	let mut heap = GCHeap::new();
 	{
 		let mut vm = VM::new(&mut heap);
-		vm.run_bytecode_file(file);
+		vm.run_program(&program);
 	}
 	heap.collect();
 	Ok(())

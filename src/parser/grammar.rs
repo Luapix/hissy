@@ -122,7 +122,7 @@ peg::parser! {
 		rule indented_block() -> Vec<Stat>
 			= sym(":") [Token::Indent] b:block() [Token::Dedent] { b }
 		
-		pub rule program() -> Program
+		pub rule program() -> ProgramAST
 			= [Token::Newline] b:block() [Token::Newline]? { b }
 	}
 }

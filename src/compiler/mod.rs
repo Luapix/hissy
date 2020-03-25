@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 
 use super::parser::{parse, ast::{Expr, Stat, Cond, BinOp, UnaOp}};
-use super::vm::{MAX_REGISTERS, chunk::{Chunk, ChunkConstant}, InstrType};
+use super::vm::{MAX_REGISTERS, chunk::{Chunk, ChunkConstant, Program}, InstrType};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum RegContent {
@@ -277,11 +277,17 @@ impl Compiler {
 		// Basic check to make sure no registers have been "leaked"
 	}
 	
-	pub fn compile_chunk(&mut self, input: &str) -> Result<Chunk, String> {
-		let ast = parse(input)?;
-		let mut chunk = Chunk::new();
-		self.compile_block(&mut chunk, ast);
+	fn compile_chunk(&mut self, chunk: &mut Chunk, ast: Vec<Stat>) {
+		self.compile_block(chunk, ast);
 		chunk.nb_registers = self.reg_mgr.reg_cnt;
-		Ok(chunk)
+	}
+	
+	pub fn compile_program(&mut self, input: &str) -> Result<Program, String> {
+		let ast = parse(input)?;
+		let mut program = Program {
+			main: Chunk::new()
+		};
+		self.compile_chunk(&mut program.main, ast);
+		Ok(program)
 	}
 }
