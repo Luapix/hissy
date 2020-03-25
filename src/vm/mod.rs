@@ -107,6 +107,8 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) {
 	
 	let mut it = chunk.code.iter();
 	
+	let mut counter = 0;
+	
 	macro_rules! bin_op {
 		($method:ident) => {{
 			let (a, b, c) = (read_u8(&mut it), read_u8(&mut it), read_u8(&mut it));
@@ -182,6 +184,11 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) {
 				let v = registers.reg_or_cst(chunk, heap, read_u8(&mut it));
 				println!("{}", v.repr());
 			},
+		}
+		
+		counter += 1;
+		if counter % 100 == 0 {
+			heap.collect();
 		}
 	}
 	

@@ -190,6 +190,10 @@ impl GCHeap {
 		}
 	}
 	
+	pub fn size(&self) -> usize {
+		self.objects.len()
+	}
+	
 	pub fn is_empty(&self) -> bool {
 		self.objects.is_empty()
 	}
