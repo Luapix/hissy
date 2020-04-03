@@ -13,10 +13,11 @@ pub mod object;
 
 pub const MAX_REGISTERS: u8 = 128;
 
-use gc::GCHeap;
+use gc::{GCHeap, GCRef};
 use value::{Value, NIL};
 use serial::*;
 use chunk::{Chunk, Program};
+use object::Closure;
 
 #[derive(Debug, TryFromPrimitive)]
 #[repr(u8)]
@@ -33,9 +34,10 @@ pub enum InstrType {
 
 
 struct ExecRecord {
-	chunk_id: u32,
-	return_add: u32,
+	chunk_id: usize,
+	return_add: usize,
 	return_reg: u8,
+	reg_window: usize,
 }
 
 
@@ -58,24 +60,34 @@ impl<'a> Deref for ValueRef<'a> {
 
 struct Registers {
 	registers: Vec<Value>,
+	window: usize,
 }
 
 impl Registers {
 	pub fn new() -> Registers {
-		Registers { registers: vec![] }
+		Registers { registers: vec![], window: 0 }
 	}
 	
-	pub fn add(&mut self, n: u16) {
+	pub fn shift_window(&mut self, n: u16) {
+		self.window += usize::from(n);
+	}
+	
+	pub fn reset_window(&mut self, n: usize) {
+		self.window = n;
+	}
+	
+	pub fn enter_frame(&mut self, n: u16) {
 		self.registers.resize(self.registers.len() + usize::from(n), NIL);
 	}
 	
-	pub fn remove(&mut self, n: u16) {
+	pub fn leave_frame(&mut self, n: u16) {
 		self.registers.resize(self.registers.len() - usize::from(n), NIL);
 	}
 	
 	pub fn reg_or_cst(&self, chunk: &Chunk, heap: &mut GCHeap, reg: u8) -> ValueRef {
 		if reg < MAX_REGISTERS {
-			ValueRef::Reg(self.registers.get(usize::try_from(reg).unwrap()).expect("Invalid register"))
+			let reg2 = self.window + usize::from(reg);
+			ValueRef::Reg(self.registers.get(reg2).expect("Invalid register"))
 		} else {
 			let cst = usize::try_from(255 - reg).unwrap();
 			let value = chunk.constants.get(cst).expect("Invalid constant").clone();
@@ -85,7 +97,8 @@ impl Registers {
 	}
 	
 	pub fn mut_reg(&mut self, reg: u8) -> &mut Value {
-		self.registers.get_mut(reg as usize).expect("Invalid register")
+		let reg2 = self.window + usize::from(reg);
+		self.registers.get_mut(reg2).expect("Invalid register")
 	}
 }
 
@@ -103,9 +116,9 @@ fn iter_from<'a>(code: &'a Vec<u8>, pos: usize) -> slice::Iter<'a, u8> {
 pub fn run_program(heap: &mut GCHeap, program: &Program) {
 	let mut registers = Registers::new();
 	
-	let chunk_id = 0;
-	let chunk = program.chunks.get(chunk_id).expect("Program has no main chunk");
-	registers.add(chunk.nb_registers);
+	let mut chunk_id = 0;
+	let mut chunk = program.chunks.get(chunk_id).expect("Program has no main chunk");
+	registers.enter_frame(chunk.nb_registers);
 	
 	let mut it = chunk.code.iter();
 	
@@ -165,13 +178,41 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) {
 			InstrType::Gth => bin_op!(gth),
 			InstrType::Geq => bin_op!(geq),
 			InstrType::Func => {
-				unimplemented!();
+				let chunk_id = read_u8(&mut it);
+				let rout = read_u8(&mut it);
+				*registers.mut_reg(rout) = heap.make_value(Closure::new(chunk_id));
 			},
 			InstrType::Call => {
-				unimplemented!();
+				let func = registers.reg_or_cst(chunk, heap, read_u8(&mut it));
+				let rout = read_u8(&mut it);
+				let func = GCRef::<Closure>::try_from(func.clone()).expect("Cannot call value");
+				
+				let pos = usize::try_from(&chunk.code.len() - it.len()).unwrap();
+				calls.push(ExecRecord {
+					chunk_id: chunk_id,
+					return_add: pos,
+					return_reg: rout,
+					reg_window: registers.window,
+				});
+				registers.shift_window(chunk.nb_registers);
+				
+				chunk_id = usize::from(func.chunk_id);
+				chunk = &program.chunks[chunk_id];
+				registers.enter_frame(chunk.nb_registers);
+				it = chunk.code.iter();
 			},
 			InstrType::Ret => {
-				unimplemented!();
+				let rin = read_u8(&mut it);
+				let temp = registers.reg_or_cst(chunk, heap, rin).clone();
+				registers.leave_frame(chunk.nb_registers);
+				let rec = calls.pop().expect("Cannot return from main chunk");
+				
+				registers.reset_window(rec.reg_window);
+				chunk_id = rec.chunk_id;
+				chunk = program.chunks.get(chunk_id).expect("Return chunk doesn't exist");
+				it = iter_from(&chunk.code, rec.return_add);
+				
+				*registers.mut_reg(rec.return_reg) = temp;
 			}
 			InstrType::Jmp => {
 				let final_add = read_rel_add(&mut it, &chunk.code);
@@ -205,5 +246,5 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) {
 		}
 	}
 	
-	registers.remove(chunk.nb_registers);
+	registers.leave_frame(chunk.nb_registers);
 }

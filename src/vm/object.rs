@@ -35,6 +35,22 @@ impl<T: GC> Traceable for Vec<GCRef<T>> {
 	}
 }
 
+#[derive(Debug)]
+pub struct Closure {
+	pub chunk_id: u8
+}
+
+impl Closure {
+	pub fn new(chunk_id: u8) -> Closure {
+		Closure { chunk_id }
+	}
+}
+
+impl Traceable for Closure {
+	fn mark(&self) {}
+	fn unroot(&mut self) {}
+}
+
 
 #[cfg(test)]
 mod tests {

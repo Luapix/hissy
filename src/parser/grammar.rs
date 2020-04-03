@@ -89,7 +89,7 @@ peg::parser! {
 			/ { Type::Any }
 		
 		rule function_decl() -> (Expr, Type)
-			= sym("(") a:typed_ident()* sym(")") r:return_type() b:indented_block() {
+			= sym("(") a:(typed_ident() ** sym(",")) sym(")") r:return_type() b:indented_block() {
 				let (arg_names, arg_types) = a.iter().cloned().unzip();
 				(Expr::Function(arg_names, b), Type::Function(arg_types, Box::new(r)))
 			}

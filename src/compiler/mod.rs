@@ -200,6 +200,14 @@ impl Compiler {
 				needs_copy = false;
 				ctx.regs.emit_reg(&mut self.chunks[chunk], dest)
 			},
+			Expr::Call(e, _args) => {
+				let r = self.compile_expr(chunk, ctx, *e, None);
+				ctx.regs.free_temp_reg(r);
+				self.chunks[chunk].emit_instr(InstrType::Call);
+				self.chunks[chunk].emit_byte(r);
+				needs_copy = false;
+				ctx.regs.emit_reg(&mut self.chunks[chunk], dest)
+			},
 			Expr::Function(args, bl) =>  {
 				let new_chunk = self.compile_chunk(String::from("func"), bl, args);
 				self.chunks[chunk].emit_instr(InstrType::Func);

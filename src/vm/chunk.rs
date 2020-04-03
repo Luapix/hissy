@@ -175,7 +175,7 @@ impl Chunk {
 					s.push_str(&format!("{}, {}", read_u8(&mut it), self.format_reg(&mut it)));
 				},
 				Call => {
-					unimplemented!();
+					s.push_str(&format!("{}, {}", self.format_reg(&mut it), self.format_reg(&mut it)));
 				},
 				Ret => {
 					s.push_str(&format!("{}", self.format_reg(&mut it)));
