@@ -79,17 +79,13 @@ impl RegisterManager {
 }
 
 
-struct ChunkCompiler {
-	reg_mgr: RegisterManager,
-	contexts: Vec<HashMap<String, u8>>,
+pub struct Locals {
+	contexts: Vec<HashMap<String, u8>>
 }
 
-impl ChunkCompiler {
-	pub fn new() -> ChunkCompiler {
-		ChunkCompiler {
-			reg_mgr: RegisterManager::new(),
-			contexts: Vec::new(),
-		}
+impl Locals {
+	fn new() -> Locals {
+		Locals { contexts: Vec::new() }
 	}
 	
 	fn find_local(&self, id: &str) -> Option<u8> {
@@ -101,37 +97,75 @@ impl ChunkCompiler {
 		None
 	}
 	
-	// Adds constant to the list of constants in the chunk, and return the constant's register index
-	fn compile_constant(&mut self, chunk: &mut Chunk, val: ChunkConstant) -> u8 {
-		chunk.constants.push(val);
-		let cst_idx = isize::try_from(chunk.constants.len() - 1).unwrap();
-		let reg = 255 - cst_idx;
-		reg.try_into().ok().filter(|r| *r >= MAX_REGISTERS).expect("Too many constants required")
+	fn find_hyper_local(&self, id: &str) -> Option<u8> {
+		self.contexts.last().unwrap().get(id).copied()
+	}
+}
+
+
+pub struct ChunkContext {
+	regs: RegisterManager,
+	locals: Locals,
+}
+
+impl ChunkContext {
+	pub fn new() -> ChunkContext {
+		ChunkContext {
+			regs: RegisterManager::new(),
+			locals: Locals::new(),
+		}
+	}
+	
+	fn enter_block(&mut self) {
+		self.locals.contexts.push(HashMap::new());
+	}
+	
+	fn exit_block(&mut self) {
+		for reg in self.locals.contexts.last().unwrap().values().copied() {
+			self.regs.free_reg(reg);
+		}
+		self.locals.contexts.pop();
+	}
+	
+	fn make_local(&mut self, id: String, reg: u8) {
+		self.locals.contexts.last_mut().unwrap().insert(id, reg);
+		self.regs.used_registers.insert(reg, RegContent::Local);
+	}
+}
+
+
+pub struct Compiler {
+	chunks: Vec<Chunk>,
+}
+
+impl Compiler {
+	pub fn new() -> Compiler {
+		Compiler { chunks: Vec::new() }
 	}
 	
 	// Compile computation of expr (into dest if given), and returns final register
 	// Warning: If no dest is given, do not assume the final register is a new, temporary one,
 	// it may be a local or a constant!
-	fn compile_expr(&mut self, chunk: &mut Chunk, expr: &Expr, dest: Option<u8>) -> u8 {
+	fn compile_expr(&mut self, chunk: usize, ctx: &mut ChunkContext, expr: Expr, dest: Option<u8>) -> u8 {
 		let mut needs_copy = true;
 		let mut reg = match expr {
 			Expr::Nil =>
-				self.compile_constant(chunk, ChunkConstant::Nil),
+				self.chunks[chunk].compile_constant(ChunkConstant::Nil),
 			Expr::Bool(b) =>
-				self.compile_constant(chunk, ChunkConstant::Bool(*b)),
+				self.chunks[chunk].compile_constant(ChunkConstant::Bool(b)),
 			Expr::Int(i) =>
-				self.compile_constant(chunk, ChunkConstant::Int(*i)),
+				self.chunks[chunk].compile_constant(ChunkConstant::Int(i)),
 			Expr::Real(r) =>
-				self.compile_constant(chunk, ChunkConstant::Real(*r)),
+				self.chunks[chunk].compile_constant(ChunkConstant::Real(r)),
 			Expr::String(s) => 
-				self.compile_constant(chunk, ChunkConstant::String(s.clone())),
+				self.chunks[chunk].compile_constant(ChunkConstant::String(s.clone())),
 			Expr::Id(s) =>
-				self.find_local(s).expect("Referencing undefined local"),
+				ctx.locals.find_local(&s).expect("Referencing undefined local"),
 			Expr::BinOp(op, e1, e2) => {
-				let r1 = self.compile_expr(chunk, &e1, None);
-				let r2 = self.compile_expr(chunk, &e2, None);
-				self.reg_mgr.free_temp_reg(r1);
-				self.reg_mgr.free_temp_reg(r2);
+				let r1 = self.compile_expr(chunk, ctx, *e1, None);
+				let r2 = self.compile_expr(chunk, ctx, *e2, None);
+				ctx.regs.free_temp_reg(r1);
+				ctx.regs.free_temp_reg(r2);
 				let instr = match op {
 					BinOp::Plus => InstrType::Add,
 					BinOp::Minus => InstrType::Sub,
@@ -148,60 +182,69 @@ impl ChunkCompiler {
 					BinOp::And => InstrType::And,
 					BinOp::Or => InstrType::Or,
 				};
-				chunk.emit_instr(instr);
-				chunk.emit_byte(r1);
-				chunk.emit_byte(r2);
+				self.chunks[chunk].emit_instr(instr);
+				self.chunks[chunk].emit_byte(r1);
+				self.chunks[chunk].emit_byte(r2);
 				needs_copy = false;
-				self.reg_mgr.emit_reg(chunk, dest)
+				ctx.regs.emit_reg(&mut self.chunks[chunk], dest)
 			},
 			Expr::UnaOp(op, e) => {
-				let r = self.compile_expr(chunk, &e, dest);
-				self.reg_mgr.free_temp_reg(r);
+				let r = self.compile_expr(chunk, ctx, *e, dest);
+				ctx.regs.free_temp_reg(r);
 				let instr = match op {
 					UnaOp::Not => InstrType::Not,
 					UnaOp::Minus => InstrType::Neg,
 				};
-				chunk.emit_instr(instr);
-				chunk.emit_byte(r);
+				self.chunks[chunk].emit_instr(instr);
+				self.chunks[chunk].emit_byte(r);
 				needs_copy = false;
-				self.reg_mgr.emit_reg(chunk, dest)
+				ctx.regs.emit_reg(&mut self.chunks[chunk], dest)
+			},
+			Expr::Function(args, bl) =>  {
+				let new_chunk = self.compile_chunk(String::from("func"), bl, args);
+				self.chunks[chunk].emit_instr(InstrType::Func);
+				self.chunks[chunk].emit_byte(new_chunk);
+				needs_copy = false;
+				ctx.regs.emit_reg(&mut self.chunks[chunk], dest)
 			},
 			_ => unimplemented!("Unimplemented expression type: {:?}", expr),
 		};
 		
 		if needs_copy {
 			if let Some(dest) = dest {
-				chunk.emit_instr(InstrType::Cpy);
-				chunk.emit_byte(reg);
-				chunk.emit_byte(dest);
+				self.chunks[chunk].emit_instr(InstrType::Cpy);
+				self.chunks[chunk].emit_byte(reg);
+				self.chunks[chunk].emit_byte(dest);
 				reg = dest;
 			}
 		}
 		
 		reg
 	}
-	
-	fn compile_block(&mut self, chunk: &mut Chunk, stats: Vec<Stat>) {
-		let used_before = self.reg_mgr.used_registers.len();
-		self.contexts.push(HashMap::new());
+
+
+	fn compile_block(&mut self, chunk: usize, ctx: &mut ChunkContext, stats: Vec<Stat>) {
+		let used_before = ctx.regs.used_registers.len();
+		
+		ctx.enter_block();
+		
 		for stat in stats {
 			match stat {
 				Stat::ExprStat(e) => {
-					let reg = self.compile_expr(chunk, &e, None);
-					self.reg_mgr.free_temp_reg(reg);
+					let reg = self.compile_expr(chunk, ctx, e, None);
+					ctx.regs.free_temp_reg(reg);
 				},
 				Stat::Let((id, _ty), e) => {
-					if let Some(reg) = self.contexts.last().unwrap().get(&id).copied() { // if binding already exists
-						self.reg_mgr.free_reg(reg);
+					if let Some(reg) = ctx.locals.find_hyper_local(&id) { // if binding already exists
+						ctx.regs.free_reg(reg);
 					}
-					let reg = self.reg_mgr.new_reg();
-					self.compile_expr(chunk, &e, Some(reg));
-					self.contexts.last_mut().unwrap().insert(id, reg);
-					self.reg_mgr.used_registers.insert(reg, RegContent::Local);
+					let reg = ctx.regs.new_reg();
+					self.compile_expr(chunk, ctx, e, Some(reg));
+					ctx.make_local(id, reg);
 				},
 				Stat::Set(id, e) => {
-					let reg = self.find_local(&id).expect("Referencing undefined local");
-					self.compile_expr(chunk, &e, Some(reg));
+					let reg = ctx.locals.find_local(&id).expect("Referencing undefined local");
+					self.compile_expr(chunk, ctx, e, Some(reg));
 				},
 				Stat::Cond(branches) => {
 					let mut last_jmp = None;
@@ -209,95 +252,97 @@ impl ChunkCompiler {
 					for (cond, bl) in branches {
 						if let Some(from) = last_jmp {
 							// Fill in jump from previous branch
-							fill_in_jump_from(chunk, from);
+							fill_in_jump_from(&mut self.chunks[chunk], from);
 						}
 						
 						match cond {
 							Cond::If(e) => {
-								let cond_reg = self.compile_expr(chunk, &e, None);
+								let cond_reg = self.compile_expr(chunk, ctx, e, None);
 								
 								// Jump to next branch if false
-								self.reg_mgr.free_temp_reg(cond_reg);
-								chunk.emit_instr(InstrType::Jif);
-								let from = chunk.code.len();
-								chunk.emit_byte(0); // Placeholder
-								chunk.emit_byte(cond_reg);
+								ctx.regs.free_temp_reg(cond_reg);
+								self.chunks[chunk].emit_instr(InstrType::Jif);
+								let from = self.chunks[chunk].code.len();
+								self.chunks[chunk].emit_byte(0); // Placeholder
+								self.chunks[chunk].emit_byte(cond_reg);
 								last_jmp = Some(from);
 								
-								self.compile_block(chunk, bl);
+								self.compile_block(chunk, ctx, bl);
 								
 								// Jump out of condition at end of block
-								chunk.emit_instr(InstrType::Jmp);
-								let from = chunk.code.len();
-								chunk.emit_byte(0); // Placeholder 2
+								self.chunks[chunk].emit_instr(InstrType::Jmp);
+								let from = self.chunks[chunk].code.len();
+								self.chunks[chunk].emit_byte(0); // Placeholder 2
 								end_jmps.push(from);
 							},
 							Cond::Else => {
-								self.compile_block(chunk, bl);
+								self.compile_block(chunk, ctx, bl);
 							}
 						}
 					}
 					
 					// Fill in jumps to end
 					for from in end_jmps {
-						fill_in_jump_from(chunk, from);
+						fill_in_jump_from(&mut self.chunks[chunk], from);
 					}
 				},
 				Stat::While(e, bl) => {
-					let begin = chunk.code.len();
-					let cond_reg = self.compile_expr(chunk, &e, None);
+					let begin = self.chunks[chunk].code.len();
+					let cond_reg = self.compile_expr(chunk, ctx, e, None);
 					
-					self.reg_mgr.free_temp_reg(cond_reg);
-					chunk.emit_instr(InstrType::Jif);
-					let placeholder = chunk.code.len();
-					chunk.emit_byte(0); // Placeholder
-					chunk.emit_byte(cond_reg);
+					ctx.regs.free_temp_reg(cond_reg);
+					self.chunks[chunk].emit_instr(InstrType::Jif);
+					let placeholder = self.chunks[chunk].code.len();
+					self.chunks[chunk].emit_byte(0); // Placeholder
+					self.chunks[chunk].emit_byte(cond_reg);
 					
-					self.compile_block(chunk, bl);
+					self.compile_block(chunk, ctx, bl);
 					
-					chunk.emit_instr(InstrType::Jmp);
-					emit_jump_to(chunk, begin);
-					fill_in_jump_from(chunk, placeholder);
+					self.chunks[chunk].emit_instr(InstrType::Jmp);
+					emit_jump_to(&mut self.chunks[chunk], begin);
+					fill_in_jump_from(&mut self.chunks[chunk], placeholder);
 				},
 				Stat::Log(e) => {
-					let reg = self.compile_expr(chunk, &e, None);
-					self.reg_mgr.free_temp_reg(reg);
-					chunk.emit_instr(InstrType::Log);
-					chunk.emit_byte(reg);
+					let reg = self.compile_expr(chunk, ctx, e, None);
+					ctx.regs.free_temp_reg(reg);
+					self.chunks[chunk].emit_instr(InstrType::Log);
+					self.chunks[chunk].emit_byte(reg);
+				},
+				Stat::Return(e) => {
+					let reg = self.compile_expr(chunk, ctx, e, None);
+					ctx.regs.free_temp_reg(reg);
+					self.chunks[chunk].emit_instr(InstrType::Ret);
+					self.chunks[chunk].emit_byte(reg);
 				},
 				_ => unimplemented!()
 			}
 		}
-		for reg in self.contexts.last().unwrap().values().copied() {
-			self.reg_mgr.free_reg(reg);
-		}
-		self.contexts.pop();
 		
-		debug_assert!(used_before == self.reg_mgr.used_registers.len(), "Leaked register");
+		ctx.exit_block();
+		
+		debug_assert!(used_before == ctx.regs.used_registers.len(), "Leaked register");
 		// Basic check to make sure no registers have been "leaked"
 	}
-	
-	fn compile_chunk(mut self, name: String, ast: Vec<Stat>) -> Chunk {
-		let mut chunk = Chunk::new(name);
-		self.compile_block(&mut chunk, ast);
-		chunk.nb_registers = self.reg_mgr.reg_cnt;
-		chunk
-	}
-}
 
-pub struct Compiler {
-	
-}
 
-impl Compiler {
-	pub fn new() -> Compiler {
-		Compiler { }
+	fn compile_chunk(&mut self, name: String, ast: Vec<Stat>, args: Vec<String>) -> u8 {
+		self.chunks.push(Chunk::new(name));
+		let chunk_id = self.chunks.len() - 1;
+		let mut ctx = ChunkContext::new();
+		ctx.enter_block();
+		for id in args {
+			let reg = ctx.regs.new_reg();
+			ctx.make_local(id, reg);
+		}
+		self.compile_block(chunk_id, &mut ctx, ast);
+		ctx.exit_block();
+		self.chunks[chunk_id].nb_registers = ctx.regs.reg_cnt;
+		u8::try_from(self.chunks.len() - 1).expect("Too many chunks")
 	}
 	
-	pub fn compile_program(&mut self, input: &str) -> Result<Program, String> {
+	pub fn compile_program(mut self, input: &str) -> Result<Program, String> {
 		let ast = parse(input)?;
-		let main = ChunkCompiler::new().compile_chunk(String::from("main"), ast);
-		let chunks = vec![ main ];
-		Ok(Program { chunks: chunks })
+		self.compile_chunk(String::from("main"), ast, Vec::new());
+		Ok(Program { chunks: self.chunks })
 	}
 }

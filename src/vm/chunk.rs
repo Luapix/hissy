@@ -126,6 +126,14 @@ impl Chunk {
 		self.code.push(byte);
 	}
 	
+	// Adds constant to the list of constants in the chunk, and return the constant's register index
+	pub fn compile_constant(&mut self, val: ChunkConstant) -> u8 {
+		self.constants.push(val);
+		let cst_idx = isize::try_from(self.constants.len() - 1).unwrap();
+		let reg = 255 - cst_idx;
+		u8::try_from(reg).ok().filter(|r| *r >= MAX_REGISTERS).expect("Too many constants required")
+	}
+	
 	fn format_reg(&self, it: &mut slice::Iter<u8>) -> String {
 		let reg = *it.next().unwrap();
 		if reg < MAX_REGISTERS {
@@ -162,6 +170,15 @@ impl Chunk {
 				Add | Sub | Mul | Div | Mod | Pow | Or | And
 					| Eq | Neq | Lth | Leq | Gth | Geq => {
 					s.push_str(&format!("{}, {}, {}", self.format_reg(&mut it), self.format_reg(&mut it), self.format_reg(&mut it)));
+				},
+				Func => {
+					s.push_str(&format!("{}, {}", read_u8(&mut it), self.format_reg(&mut it)));
+				},
+				Call => {
+					unimplemented!();
+				},
+				Ret => {
+					s.push_str(&format!("{}", self.format_reg(&mut it)));
 				},
 				Jmp => {
 					s.push_str(&format!("{}", self.format_rel_add(&mut it)));

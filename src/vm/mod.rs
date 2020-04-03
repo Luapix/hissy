@@ -26,6 +26,7 @@ pub enum InstrType {
 	Neg, Add, Sub, Mul, Div, Mod, Pow,
 	Not, Or, And,
 	Eq, Neq, Lth, Leq, Gth, Geq,
+	Func, Call, Ret,
 	Jmp, Jit, Jif,
 	Log,
 }
@@ -34,6 +35,7 @@ pub enum InstrType {
 struct ExecRecord {
 	chunk_id: u32,
 	return_add: u32,
+	return_reg: u8,
 }
 
 
@@ -107,6 +109,8 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) {
 	
 	let mut it = chunk.code.iter();
 	
+	let mut calls: Vec<ExecRecord> = vec![];
+	
 	let mut counter = 0;
 	
 	macro_rules! bin_op {
@@ -160,6 +164,15 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) {
 			InstrType::Leq => bin_op!(leq),
 			InstrType::Gth => bin_op!(gth),
 			InstrType::Geq => bin_op!(geq),
+			InstrType::Func => {
+				unimplemented!();
+			},
+			InstrType::Call => {
+				unimplemented!();
+			},
+			InstrType::Ret => {
+				unimplemented!();
+			}
 			InstrType::Jmp => {
 				let final_add = read_rel_add(&mut it, &chunk.code);
 				it = iter_from(&chunk.code, final_add);

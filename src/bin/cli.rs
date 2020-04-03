@@ -22,7 +22,7 @@ fn parse(file: &str) -> Result<ProgramAST, String> {
 
 fn compile(file: &str) -> Result<(), String> {
 	let code = format_error(read_to_string(file), "Unable to open file")?;
-	let mut compiler = Compiler::new();
+	let compiler = Compiler::new();
 	let program = format_error(compiler.compile_program(&code), "Compile error")?;
 	format_error(program.to_file(Path::new(file).with_extension("hic")), "Compile error")
 }
@@ -34,7 +34,7 @@ fn list(file: &str) {
 
 fn interpret(file: &str) -> Result<(), String> {
 	let code = format_error(read_to_string(file), "Unable to open file")?;
-	let mut compiler = Compiler::new();
+	let compiler = Compiler::new();
 	let program = format_error(compiler.compile_program(&code), "Compile error")?;
 	
 	let mut heap = GCHeap::new();
