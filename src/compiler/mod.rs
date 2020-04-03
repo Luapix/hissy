@@ -1,6 +1,7 @@
 
+use std::cmp::Reverse;
 use std::collections::HashMap;
-use std::convert::{TryFrom, TryInto};
+use std::convert::TryFrom;
 
 use super::parser::{parse, ast::{Expr, Stat, Cond, BinOp, UnaOp}};
 use super::vm::{MAX_REGISTERS, chunk::{Chunk, ChunkConstant, Program}, InstrType};
@@ -28,31 +29,39 @@ fn fill_in_jump_from(chunk: &mut Chunk, add: usize) {
 }
 
 pub struct RegisterManager {
-	reg_cnt: u16,
-	next_free_reg: u16,
-	used_registers: HashMap<u8, RegContent>,
+	required: u16,
+	used: u16,
+	locals: u16,
 }
 
 impl RegisterManager {
 	pub fn new() -> RegisterManager {
 		RegisterManager {
-			reg_cnt: 0,
-			next_free_reg: 0,
-			used_registers: HashMap::new(),
+			required: 0,
+			used: 0,
+			locals: 0,
 		}
 	}
 	
 	pub fn new_reg(&mut self) -> u8 {
-		let new_reg = self.next_free_reg.try_into().ok().filter(|r| *r < MAX_REGISTERS)
+		let new_reg = u8::try_from(self.used).ok().filter(|r| *r < MAX_REGISTERS)
 			.expect("Cannot compile: Too many registers required");
-		if new_reg as u16 + 1 > self.reg_cnt {
-			self.reg_cnt = new_reg as u16 + 1;
-		}
-		self.used_registers.insert(new_reg, RegContent::Temp);
-		while self.next_free_reg.try_into().map_or(false, |i: u8| self.used_registers.contains_key(&i)) {
-			self.next_free_reg += 1;
+		self.used += 1;
+		if self.used > self.required {
+			self.required = self.used
 		}
 		new_reg
+	}
+	
+	pub fn new_reg_range(&mut self, n: u16) -> u8 {
+		u8::try_from(self.used + n - 1).ok().filter(|r| *r < MAX_REGISTERS)
+			.expect("Cannot compile: Too many registers required");
+		let range_start = u8::try_from(self.used).unwrap();
+		self.used += n;
+		if self.used > self.required {
+			self.required = self.used
+		}
+		range_start
 	}
 	
 	// Emits register to chunk; dest if Some, else new_reg()
@@ -62,18 +71,38 @@ impl RegisterManager {
 		reg
 	}
 	
+	pub fn make_local(&mut self, i: u8) {
+		debug_assert!(u16::from(i) == self.locals, "Local allocated above temporaries");
+		self.locals += 1;
+	}
+	
 	// Marks register as freed
 	pub fn free_reg(&mut self, i: u8) {
-		self.used_registers.remove(&i);
-		if (i as u16) < self.next_free_reg {
-			self.next_free_reg = i as u16;
+		debug_assert!(u16::from(i) == self.used - 1, "Registers are not freed in FIFO order: {}, {}", i, self.used);
+		self.used -= 1;
+		if self.locals > self.used {
+			self.locals = self.used;
+		}
+	}
+	
+	pub fn free_reg_range(&mut self, start: u8, n: u16) {
+		debug_assert!(u16::from(start) + n == self.used, "Registers are not freed in FIFO order");
+		self.used -= n;
+		if self.locals > self.used {
+			self.locals = self.used;
 		}
 	}
 	
 	// Marks register as freed if temporary
 	pub fn free_temp_reg(&mut self, i: u8) {
-		if i < MAX_REGISTERS && self.used_registers[&i] == RegContent::Temp {
+		if i < MAX_REGISTERS && u16::from(i) >= self.locals {
 			self.free_reg(i);
+		}
+	}
+	
+	pub fn free_temp_range(&mut self, start: u8, n: u16) {
+		if u16::from(start) >= self.locals {
+			self.free_reg_range(start, n);
 		}
 	}
 }
@@ -121,7 +150,9 @@ impl ChunkContext {
 	}
 	
 	fn exit_block(&mut self) {
-		for reg in self.locals.contexts.last().unwrap().values().copied() {
+		let mut to_free: Vec<u8> = self.locals.contexts.last().unwrap().values().copied().collect();
+		to_free.sort_by_key(|&x| Reverse(x));
+		for reg in to_free {
 			self.regs.free_reg(reg);
 		}
 		self.locals.contexts.pop();
@@ -129,7 +160,7 @@ impl ChunkContext {
 	
 	fn make_local(&mut self, id: String, reg: u8) {
 		self.locals.contexts.last_mut().unwrap().insert(id, reg);
-		self.regs.used_registers.insert(reg, RegContent::Local);
+		self.regs.make_local(reg);
 	}
 }
 
@@ -164,8 +195,8 @@ impl Compiler {
 			Expr::BinOp(op, e1, e2) => {
 				let r1 = self.compile_expr(chunk, ctx, *e1, None);
 				let r2 = self.compile_expr(chunk, ctx, *e2, None);
-				ctx.regs.free_temp_reg(r1);
 				ctx.regs.free_temp_reg(r2);
+				ctx.regs.free_temp_reg(r1);
 				let instr = match op {
 					BinOp::Plus => InstrType::Add,
 					BinOp::Minus => InstrType::Sub,
@@ -200,11 +231,19 @@ impl Compiler {
 				needs_copy = false;
 				ctx.regs.emit_reg(&mut self.chunks[chunk], dest)
 			},
-			Expr::Call(e, _args) => {
-				let r = self.compile_expr(chunk, ctx, *e, None);
-				ctx.regs.free_temp_reg(r);
+			Expr::Call(e, mut args) => {
+				let func = self.compile_expr(chunk, ctx, *e, None);
+				let n = u16::try_from(args.len()).unwrap();
+				let arg_range = ctx.regs.new_reg_range(n);
+				for (i, arg) in args.drain(..).enumerate() {
+					let rout = u8::try_from(usize::from(arg_range) + i).unwrap();
+					self.compile_expr(chunk, ctx, arg, Some(rout));
+				}
+				ctx.regs.free_temp_range(arg_range, n);
+				ctx.regs.free_temp_reg(func);
 				self.chunks[chunk].emit_instr(InstrType::Call);
-				self.chunks[chunk].emit_byte(r);
+				self.chunks[chunk].emit_byte(func);
+				self.chunks[chunk].emit_byte(arg_range);
 				needs_copy = false;
 				ctx.regs.emit_reg(&mut self.chunks[chunk], dest)
 			},
@@ -232,7 +271,7 @@ impl Compiler {
 
 
 	fn compile_block(&mut self, chunk: usize, ctx: &mut ChunkContext, stats: Vec<Stat>) {
-		let used_before = ctx.regs.used_registers.len();
+		let used_before = ctx.regs.used;
 		
 		ctx.enter_block();
 		
@@ -254,15 +293,11 @@ impl Compiler {
 					let reg = ctx.locals.find_local(&id).expect("Referencing undefined local");
 					self.compile_expr(chunk, ctx, e, Some(reg));
 				},
-				Stat::Cond(branches) => {
-					let mut last_jmp = None;
+				Stat::Cond(mut branches) => {
 					let mut end_jmps = vec![];
-					for (cond, bl) in branches {
-						if let Some(from) = last_jmp {
-							// Fill in jump from previous branch
-							fill_in_jump_from(&mut self.chunks[chunk], from);
-						}
-						
+					let last_branch = branches.len() - 1;
+					for (i, (cond, bl)) in branches.drain(..).enumerate() {
+						let mut after_jmp = None;
 						match cond {
 							Cond::If(e) => {
 								let cond_reg = self.compile_expr(chunk, ctx, e, None);
@@ -270,22 +305,27 @@ impl Compiler {
 								// Jump to next branch if false
 								ctx.regs.free_temp_reg(cond_reg);
 								self.chunks[chunk].emit_instr(InstrType::Jif);
-								let from = self.chunks[chunk].code.len();
+								after_jmp = Some(self.chunks[chunk].code.len());
 								self.chunks[chunk].emit_byte(0); // Placeholder
 								self.chunks[chunk].emit_byte(cond_reg);
-								last_jmp = Some(from);
 								
 								self.compile_block(chunk, ctx, bl);
 								
-								// Jump out of condition at end of block
-								self.chunks[chunk].emit_instr(InstrType::Jmp);
-								let from = self.chunks[chunk].code.len();
-								self.chunks[chunk].emit_byte(0); // Placeholder 2
-								end_jmps.push(from);
+								if i != last_branch {
+									// Jump out of condition at end of block
+									self.chunks[chunk].emit_instr(InstrType::Jmp);
+									let from2 = self.chunks[chunk].code.len();
+									self.chunks[chunk].emit_byte(0); // Placeholder 2
+									end_jmps.push(from2);
+								}
 							},
 							Cond::Else => {
 								self.compile_block(chunk, ctx, bl);
 							}
+						}
+						
+						if let Some(from) = after_jmp {
+							fill_in_jump_from(&mut self.chunks[chunk], from);
 						}
 					}
 					
@@ -328,7 +368,7 @@ impl Compiler {
 		
 		ctx.exit_block();
 		
-		debug_assert!(used_before == ctx.regs.used_registers.len(), "Leaked register");
+		debug_assert!(used_before == ctx.regs.used, "Leaked register");
 		// Basic check to make sure no registers have been "leaked"
 	}
 
@@ -344,8 +384,8 @@ impl Compiler {
 		}
 		self.compile_block(chunk_id, &mut ctx, ast);
 		ctx.exit_block();
-		self.chunks[chunk_id].nb_registers = ctx.regs.reg_cnt;
-		u8::try_from(self.chunks.len() - 1).expect("Too many chunks")
+		self.chunks[chunk_id].nb_registers = ctx.regs.required;
+		u8::try_from(chunk_id).expect("Too many chunks")
 	}
 	
 	pub fn compile_program(mut self, input: &str) -> Result<Program, String> {
