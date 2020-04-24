@@ -45,8 +45,11 @@ peg::parser! {
 		
 		rule parenthesized() -> Expr = sym("(") e:expression() sym(")") { e }
 		
+		rule function() -> Expr =
+			sym("fun") f:function_decl() { f.0 }
+		
 		rule primary_expression() -> Expr
-			= literal() / list() / parenthesized()
+			= literal() / list() / parenthesized() / function()
 		
 		pub rule expression() -> Expr = precedence!{
 			x:(@) sym("and") y:@ { Expr::BinOp(BinOp::And, Box::new(x), Box::new(y)) }

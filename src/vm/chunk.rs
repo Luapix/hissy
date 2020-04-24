@@ -151,7 +151,7 @@ impl Chunk {
 	}
 	
 	pub fn disassemble(&self, s: &mut String) {
-		s.push_str(&format!("[Chunk '{}'] ({} registers; {} constants)\n",
+		s.push_str(&format!("[Chunk {}] ({} registers; {} constants)\n",
 			self.name, self.nb_registers, self.constants.len()));
 		
 		let mut it = self.code.iter();

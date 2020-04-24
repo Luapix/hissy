@@ -177,7 +177,7 @@ impl Compiler {
 	// Compile computation of expr (into dest if given), and returns final register
 	// Warning: If no dest is given, do not assume the final register is a new, temporary one,
 	// it may be a local or a constant!
-	fn compile_expr(&mut self, chunk: usize, ctx: &mut ChunkContext, expr: Expr, dest: Option<u8>) -> u8 {
+	fn compile_expr(&mut self, chunk: usize, ctx: &mut ChunkContext, expr: Expr, dest: Option<u8>, name: Option<String>) -> u8 {
 		let mut needs_copy = true;
 		let mut reg = match expr {
 			Expr::Nil =>
@@ -193,8 +193,8 @@ impl Compiler {
 			Expr::Id(s) =>
 				ctx.locals.find_local(&s).expect("Referencing undefined local"),
 			Expr::BinOp(op, e1, e2) => {
-				let r1 = self.compile_expr(chunk, ctx, *e1, None);
-				let r2 = self.compile_expr(chunk, ctx, *e2, None);
+				let r1 = self.compile_expr(chunk, ctx, *e1, None, None);
+				let r2 = self.compile_expr(chunk, ctx, *e2, None, None);
 				ctx.regs.free_temp_reg(r2);
 				ctx.regs.free_temp_reg(r1);
 				let instr = match op {
@@ -220,7 +220,7 @@ impl Compiler {
 				ctx.regs.emit_reg(&mut self.chunks[chunk], dest)
 			},
 			Expr::UnaOp(op, e) => {
-				let r = self.compile_expr(chunk, ctx, *e, dest);
+				let r = self.compile_expr(chunk, ctx, *e, dest, None);
 				ctx.regs.free_temp_reg(r);
 				let instr = match op {
 					UnaOp::Not => InstrType::Not,
@@ -232,12 +232,12 @@ impl Compiler {
 				ctx.regs.emit_reg(&mut self.chunks[chunk], dest)
 			},
 			Expr::Call(e, mut args) => {
-				let func = self.compile_expr(chunk, ctx, *e, None);
+				let func = self.compile_expr(chunk, ctx, *e, None, None);
 				let n = u16::try_from(args.len()).unwrap();
 				let arg_range = ctx.regs.new_reg_range(n);
 				for (i, arg) in args.drain(..).enumerate() {
 					let rout = u8::try_from(usize::from(arg_range) + i).unwrap();
-					self.compile_expr(chunk, ctx, arg, Some(rout));
+					self.compile_expr(chunk, ctx, arg, Some(rout), None);
 				}
 				ctx.regs.free_temp_range(arg_range, n);
 				ctx.regs.free_temp_reg(func);
@@ -248,7 +248,7 @@ impl Compiler {
 				ctx.regs.emit_reg(&mut self.chunks[chunk], dest)
 			},
 			Expr::Function(args, bl) =>  {
-				let new_chunk = self.compile_chunk(String::from("func"), bl, args);
+				let new_chunk = self.compile_chunk(name.unwrap_or_else(|| String::from("<func>")), bl, args);
 				self.chunks[chunk].emit_instr(InstrType::Func);
 				self.chunks[chunk].emit_byte(new_chunk);
 				needs_copy = false;
@@ -278,7 +278,7 @@ impl Compiler {
 		for stat in stats {
 			match stat {
 				Stat::ExprStat(e) => {
-					let reg = self.compile_expr(chunk, ctx, e, None);
+					let reg = self.compile_expr(chunk, ctx, e, None, None);
 					ctx.regs.free_temp_reg(reg);
 				},
 				Stat::Let((id, _ty), e) => {
@@ -286,12 +286,12 @@ impl Compiler {
 						ctx.regs.free_reg(reg);
 					}
 					let reg = ctx.regs.new_reg();
-					self.compile_expr(chunk, ctx, e, Some(reg));
+					self.compile_expr(chunk, ctx, e, Some(reg), Some(id.clone()));
 					ctx.make_local(id, reg);
 				},
 				Stat::Set(id, e) => {
 					let reg = ctx.locals.find_local(&id).expect("Referencing undefined local");
-					self.compile_expr(chunk, ctx, e, Some(reg));
+					self.compile_expr(chunk, ctx, e, Some(reg), None);
 				},
 				Stat::Cond(mut branches) => {
 					let mut end_jmps = vec![];
@@ -300,7 +300,7 @@ impl Compiler {
 						let mut after_jmp = None;
 						match cond {
 							Cond::If(e) => {
-								let cond_reg = self.compile_expr(chunk, ctx, e, None);
+								let cond_reg = self.compile_expr(chunk, ctx, e, None, None);
 								
 								// Jump to next branch if false
 								ctx.regs.free_temp_reg(cond_reg);
@@ -336,7 +336,7 @@ impl Compiler {
 				},
 				Stat::While(e, bl) => {
 					let begin = self.chunks[chunk].code.len();
-					let cond_reg = self.compile_expr(chunk, ctx, e, None);
+					let cond_reg = self.compile_expr(chunk, ctx, e, None, None);
 					
 					ctx.regs.free_temp_reg(cond_reg);
 					self.chunks[chunk].emit_instr(InstrType::Jif);
@@ -351,13 +351,13 @@ impl Compiler {
 					fill_in_jump_from(&mut self.chunks[chunk], placeholder);
 				},
 				Stat::Log(e) => {
-					let reg = self.compile_expr(chunk, ctx, e, None);
+					let reg = self.compile_expr(chunk, ctx, e, None, None);
 					ctx.regs.free_temp_reg(reg);
 					self.chunks[chunk].emit_instr(InstrType::Log);
 					self.chunks[chunk].emit_byte(reg);
 				},
 				Stat::Return(e) => {
-					let reg = self.compile_expr(chunk, ctx, e, None);
+					let reg = self.compile_expr(chunk, ctx, e, None, None);
 					ctx.regs.free_temp_reg(reg);
 					self.chunks[chunk].emit_instr(InstrType::Ret);
 					self.chunks[chunk].emit_byte(reg);
@@ -390,7 +390,7 @@ impl Compiler {
 	
 	pub fn compile_program(mut self, input: &str) -> Result<Program, String> {
 		let ast = parse(input)?;
-		self.compile_chunk(String::from("main"), ast, Vec::new());
+		self.compile_chunk(String::from("<main>"), ast, Vec::new());
 		Ok(Program { chunks: self.chunks })
 	}
 }
