@@ -23,7 +23,7 @@ use object::Closure;
 #[repr(u8)]
 pub enum InstrType {
 	Nop,
-	Cpy,
+	Cpy, GetUp, SetUp,
 	Neg, Add, Sub, Mul, Div, Mod, Pow,
 	Not, Or, And,
 	Eq, Neq, Lth, Leq, Gth, Geq,
@@ -272,6 +272,8 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) {
 					let v = vm.regs.reg_or_cst(vm.chunk, heap, read_u8(&mut vm.it));
 					println!("{}", v.repr());
 				},
+				#[allow(unreachable_patterns)]
+				i => unimplemented!("Unimplemented instruction: {:?}", i)
 			}
 		} else if vm.chunk_id == 0 {
 			break;

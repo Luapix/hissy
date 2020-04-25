@@ -1,4 +1,6 @@
 
+use std::fmt;
+
 use super::value::Value;
 use super::gc::{Traceable, GC, GCRef};
 
@@ -35,7 +37,7 @@ impl<T: GC> Traceable for Vec<GCRef<T>> {
 	}
 }
 
-#[derive(Debug)]
+
 pub struct Closure {
 	pub chunk_id: u8
 }
@@ -49,6 +51,12 @@ impl Closure {
 impl Traceable for Closure {
 	fn mark(&self) {}
 	fn unroot(&mut self) {}
+}
+
+impl fmt::Debug for Closure {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "<closure>")
+	}
 }
 
 

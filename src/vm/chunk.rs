@@ -1,4 +1,5 @@
 
+use std::fmt::Write;
 use std::path::Path;
 use std::convert::TryFrom;
 use std::fs;
@@ -49,23 +50,30 @@ impl ChunkConstant {
 }
 
 
+pub struct ChunkUpvalue {
+	pub name: String,
+	pub reg: u8,
+}
+
 pub struct Chunk {
 	pub name: String,
 	pub nb_registers: u16,
 	pub constants: Vec<ChunkConstant>,
+	pub upvalues: Vec<ChunkUpvalue>,
 	pub code: Vec<u8>,
 }
 
 
 impl Chunk {
 	pub fn new(name: String) -> Chunk {
-		Chunk { name: name, nb_registers: 0, constants: vec![], code: vec![] }
+		Chunk { name: name, nb_registers: 0, constants: vec![], upvalues: vec![], code: vec![] }
 	}
 	
 	pub fn from_bytes(it: &mut slice::Iter<u8>) -> Chunk {
 		let mut chunk = Chunk::new(read_small_str(it));
 		
 		chunk.nb_registers = read_u16(it);
+		
 		let nb_constants = read_u16(it);
 		for _ in 0..nb_constants {
 			let t = ConstantType::try_from(read_u8(it)).expect("Unrecognized constant type");
@@ -78,43 +86,56 @@ impl Chunk {
 			};
 			chunk.constants.push(value);
 		}
+		
+		let nb_upvalues = read_u16(it);
+		for _ in 0..nb_upvalues {
+			let reg = read_u8(it);
+			let name = read_small_str(it);
+			chunk.upvalues.push(ChunkUpvalue { reg, name });
+		}
+		
 		let code_size = usize::from(read_u16(it));
 		chunk.code.extend(&it.take(code_size).copied().collect::<Vec<u8>>());
 		chunk
 	}
 	
 	pub fn to_bytes(&self, bytes: &mut Vec<u8>) {
-		bytes.extend(&u8::try_from(self.name.len()).unwrap().to_le_bytes());
-		bytes.extend(self.name.as_bytes());
+		write_small_str(bytes, &self.name);
 		
-		bytes.extend(&self.nb_registers.to_le_bytes());
-		bytes.extend(&u16::try_from(self.constants.len()).unwrap().to_le_bytes());
+		write_u16(bytes, self.nb_registers);
+		
+		write_into_u16(bytes, self.constants.len(), "Too many constants to serialize");
 		for cst in &self.constants {
 			match cst {
 				ChunkConstant::Nil => {
-					bytes.push(ConstantType::Nil as u8);
+					write_u8(bytes, ConstantType::Nil as u8);
 				},
 				ChunkConstant::Bool(b) => {
-					bytes.push(ConstantType::Bool as u8);
-					bytes.push(if *b { 1 } else { 0 });
+					write_u8(bytes, ConstantType::Bool as u8);
+					write_u8(bytes, if *b { 1 } else { 0 });
 				},
 				ChunkConstant::Int(i) => {
-					bytes.push(ConstantType::Int as u8);
-					bytes.extend(&i.to_le_bytes());
+					write_u8(bytes, ConstantType::Int as u8);
+					write_i32(bytes, *i);
 				},
 				ChunkConstant::Real(r) => {
-					bytes.push(ConstantType::Real as u8);
-					bytes.extend(&r.to_le_bytes());
+					write_u8(bytes, ConstantType::Real as u8);
+					write_f64(bytes, *r);
 				},
 				ChunkConstant::String(s) => {
-					bytes.push(ConstantType::String as u8);
-					bytes.extend(&u16::try_from(s.len()).unwrap().to_le_bytes());
-					bytes.extend(s.as_bytes());
+					write_u8(bytes, ConstantType::String as u8);
+					write_str(bytes, s);
 				},
 			}
 		}
 		
-		bytes.extend(&u16::try_from(self.code.len()).unwrap().to_le_bytes());
+		write_into_u16(bytes, self.upvalues.len(), "Too many upvalues to serialize");
+		for upv in &self.upvalues {
+			write_u8(bytes, upv.reg);
+			write_small_str(bytes, &upv.name);
+		}
+		
+		write_into_u16(bytes, self.code.len(), "Code too long to serialize");
 		bytes.extend(&self.code);
 	}
 	
@@ -151,8 +172,17 @@ impl Chunk {
 	}
 	
 	pub fn disassemble(&self, s: &mut String) {
-		s.push_str(&format!("[Chunk {}] ({} registers; {} constants)\n",
+		s.push_str(&format!("{} ({} registers; {} constants)\n",
 			self.name, self.nb_registers, self.constants.len()));
+		
+		if self.upvalues.len() > 0 {
+			let upv_str = self.upvalues.iter().fold(String::new(), |mut s, u| {
+				let ty = if u.reg >= MAX_REGISTERS { "u" } else { "r" };
+				write!(&mut s, "{} ({}{})", u.name, ty, u.reg % MAX_REGISTERS).unwrap();
+				s
+			});
+			s.push_str(&format!("(upvalues: {})\n", upv_str));
+		}
 		
 		let mut it = self.code.iter();
 		let mut pos = 0;
@@ -172,7 +202,7 @@ impl Chunk {
 					s.push_str(&format!("{}, {}, {}", self.format_reg(&mut it), self.format_reg(&mut it), self.format_reg(&mut it)));
 				},
 				Func => {
-					s.push_str(&format!("{}, {}", read_u8(&mut it), self.format_reg(&mut it)));
+					s.push_str(&format!("chunk {}, {}", read_u8(&mut it), self.format_reg(&mut it)));
 				},
 				Call => {
 					s.push_str(&format!("{}, {}, {}", self.format_reg(&mut it), self.format_reg(&mut it), self.format_reg(&mut it)));
@@ -186,11 +216,16 @@ impl Chunk {
 				Jit | Jif => {
 					s.push_str(&format!("{}, {}", self.format_rel_add(&mut it), self.format_reg(&mut it)));
 				},
+				GetUp | SetUp => {
+					s.push_str(&format!("{}, {}", read_u8(&mut it), self.format_reg(&mut it)));
+				},
+				#[allow(unreachable_patterns)]
+				_ => unimplemented!("Unimplemented disassembly for instruction: {:?}", instr)
 			}
 			s.push_str(")\n");
 			pos = self.code.len() - it.len();
 		}
-		s.push_str(&format!("{}\n", pos));
+		s.push_str(&format!("{}\n\n", pos));
 	}
 }
 
@@ -222,7 +257,8 @@ impl Program {
 	pub fn disassemble(&self) -> String {
 		let mut s = String::new();
 		
-		for chunk in &self.chunks {
+		for (i, chunk) in self.chunks.iter().enumerate() {
+			s.push_str(&format!("Chunk {}:\n", i));
 			chunk.disassemble(&mut s);
 		}
 		s
