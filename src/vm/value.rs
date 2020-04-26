@@ -42,7 +42,7 @@ impl Value {
 	}
 	
 	pub fn from_pointer(pointer: *mut GCWrapper, root: bool) -> Value {
-		let pointer = pointer as u64;
+		let pointer = pointer as *mut () as u64; // Erases fat pointer data
 		debug_assert!(pointer & DATA_MASK == pointer, "Object pointer has too many bits to fit in Value");
 		let new_val = Value(base_value(if root { ValueType::Root } else { ValueType::Ref }) + pointer);
 		if root { new_val.get_pointer().unwrap().signal_root() }
@@ -52,7 +52,11 @@ impl Value {
 	pub fn get_pointer(&self) -> Option<&mut GCWrapper> {
 		let t = self.get_type();
 		if t == ValueType::Root || t == ValueType::Ref {
-			unsafe { Some(&mut *((self.0 & DATA_MASK) as *mut GCWrapper)) }
+			let pointer = GCWrapper::fatten_pointer((self.0 & DATA_MASK) as *mut ());
+			// Safety: as long as the GC algorithm is well-behaved (it frees a reference
+			// before or in the same cycle as the referee), and the collecting process
+			// does not call this function, self.pointer will be valid.
+			unsafe { Some(&mut *pointer) }
 		} else {
 			None
 		}

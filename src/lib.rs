@@ -1,3 +1,4 @@
+#![feature(raw)]
 
 #[macro_use]
 extern crate num_enum;

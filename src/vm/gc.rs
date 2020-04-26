@@ -1,8 +1,8 @@
 
+use std::{ptr, mem, raw, fmt};
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::any::Any;
-use std::collections::HashSet;
 use std::ops::Deref;
 
 use super::value::Value;
@@ -27,27 +27,55 @@ pub trait GC: 'static + Traceable + AsAny + Debug {}
 impl<T: 'static + Traceable + AsAny + Debug> GC for T {}
 
 
-pub struct GCWrapper {
+#[repr(C)]
+pub struct GCWrapper_<T: ?Sized> {
+	vtable: *mut (),
 	marked: bool,
 	roots: u32,
-	data: Box<dyn GC>,
+	data: T,
 }
+pub type GCWrapper = GCWrapper_<dyn GC>;
+// Note: we need to use this GCWrapper_<T: ?Sized> / GCWrapper indirection
+// because of Rust's still partial support for custom DSTs.
 
 impl GCWrapper {
-	fn new<T: GC>(value: T) -> GCWrapper {
-		GCWrapper { marked: false, roots: 0, data: Box::new(value) }
+	fn new_boxed<T: GC>(mut value: T) -> Box<GCWrapper> {
+		let trait_object: &mut dyn GC = &mut value;
+		// Safety: raw::TraitObject layout should correspond to actual trait object layout
+		let raw_object: raw::TraitObject = unsafe { mem::transmute(trait_object) };
+		Box::new(GCWrapper_ {
+			vtable: raw_object.vtable,
+			marked: false,
+			roots: 0,
+			data: value
+		})
+	}
+	
+	// Returns a fat pointer to GCWrapper from a thin void pointer
+	// Used in Value, since a fat pointer doesn't fit into a Value
+	// Possible since GCWrapper contains its object's VTable
+	pub fn fatten_pointer(ptr: *mut ()) -> *mut GCWrapper {
+		// Safety: "vtable" is stored at base of GCWrapper thanks to #[repr(C)],
+		// and raw::TraitObject layout should correspond to actual trait object layout
+		unsafe {
+			let vtable: *mut () = ptr::read(ptr.cast());
+			mem::transmute(raw::TraitObject {
+				data: ptr,
+				vtable: vtable,
+			})
+		}
 	}
 	
 	pub fn is_a<T: GC>(&self) -> bool {
-		(*self.data).as_any().is::<T>()
+		self.data.as_any().is::<T>()
 	}
 	
 	pub fn get<T: GC>(&mut self) -> Option<&mut T> {
-		(*self.data).as_any_mut().downcast_mut::<T>()
+		self.data.as_any_mut().downcast_mut::<T>()
 	}
 	
 	pub fn debug(&self) -> String {
-		format!("{:?}", self.data)
+		format!("{:?}", self)
 	}
 	
 	pub fn signal_root(&mut self) {
@@ -60,12 +88,18 @@ impl GCWrapper {
 	pub fn mark(&mut self) {
 		if !self.marked {
 			self.marked = true;
-			(*self.data).mark();
+			self.data.mark();
 		}
 	}
 	
 	pub fn reset(&mut self) {
 		self.marked = false;
+	}
+}
+
+impl Debug for GCWrapper {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		self.data.fmt(f)
 	}
 }
 
@@ -85,8 +119,9 @@ impl<T: GC> GCRef<T> {
 	}
 	
 	fn wrapper(&self) -> &mut GCWrapper {
-		// Safety: as long as the GC algorithm is well-behaved, ie. frees a reference
-		// before or in the same cycle as the referee, self.pointer will be valid.
+		// Safety: as long as the GC algorithm is well-behaved (it frees a reference
+		// before or in the same cycle as the referee), and the collecting process
+		// does not call this function, self.pointer will be valid.
 		unsafe { &mut *self.pointer }
 	}
 	
@@ -136,21 +171,19 @@ impl<T: GC> Debug for GCRef<T> {
 
 
 pub struct GCHeap {
-	objects: HashSet<*mut GCWrapper>,
+	objects: Vec<Box<GCWrapper>>,
 }
 
 impl GCHeap {
 	pub fn new() -> GCHeap {
-		GCHeap { objects: HashSet::new() }
+		GCHeap { objects: Vec::new() }
 	}
 	
-	fn add<T: GC>(&mut self, v: T) -> *mut GCWrapper {
-		let pointer = Box::into_raw(Box::new(GCWrapper::new(v))); // Leak GCWrapper memory
-		unsafe { (*pointer).data.unroot(); }
-		// Unroots any GCRef/Values that may have been moved into the object
-		// Safety: Of course, the pointer is still valid at this point
-		self.objects.insert(pointer);
-		pointer
+	fn add<T: GC>(&mut self, v: T) -> &mut GCWrapper {
+		let mut wrapper = GCWrapper::new_boxed(v);
+		wrapper.data.unroot();
+		self.objects.push(wrapper);
+		self.objects.last_mut().unwrap()
 	}
 
 	pub fn make_ref<T: GC>(&mut self, v: T) -> GCRef<T> {
@@ -161,31 +194,22 @@ impl GCHeap {
 	}
 	
 	pub fn collect(&mut self) {
-		for pointer in self.objects.iter() {
-			let wrapper = unsafe { &mut **pointer };
+		for wrapper in self.objects.iter_mut() {
 			if wrapper.roots > 0 {
 				wrapper.mark();
 			}
 		}
 		
-		self.objects.retain(|&pointer| {
-			let wrapper = unsafe { &mut *pointer };
-			if wrapper.marked {
-				wrapper.reset();
-				true // Keep pointer
-			} else {
-				unsafe { Box::from_raw(pointer); } // Free pointer
-				false // Remove it from set
-			}
-		});
+		self.objects.retain(|wrapper| wrapper.marked);
+		
+		for wrapper in self.objects.iter_mut() {
+			wrapper.reset();
+		}
 	}
 	
 	pub fn examine(&self) {
 		println!("== GC examine ==");
-		for pointer in self.objects.iter() {
-			let wrapper = unsafe { &**pointer };
-			// Safety of previous line: The GC algorithm should remove pointers from self.objects
-			// as soon as the object is freed.
+		for wrapper in self.objects.iter() {
 			println!("{}: {} roots", wrapper.debug(), wrapper.roots);
 		}
 	}
