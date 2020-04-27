@@ -181,7 +181,7 @@ impl ChunkContext {
 	fn make_upvalue(&mut self, id: String, reg: u8) -> u8 {
 		let upv = u8::try_from(self.upvalues.len()).expect("Too many upvalues in chunk");
 		self.upvalues.push(ChunkUpvalue { name: id, reg });
-		return upv;
+		upv
 	}
 }
 
@@ -239,6 +239,7 @@ impl DerefMut for Context {
 
 
 /// A struct holding state necessary to compilation.
+#[derive(Default)]
 pub struct Compiler {
 	chunks: Vec<Chunk>,
 }
@@ -246,7 +247,7 @@ pub struct Compiler {
 impl Compiler {
 	/// Creates a new `Compiler` object.
 	pub fn new() -> Compiler {
-		Compiler { chunks: Vec::new() }
+		Default::default()
 	}
 	
 	// Compile computation of expr (into dest if given), and returns final register
@@ -265,7 +266,7 @@ impl Compiler {
 			Expr::Real(r) =>
 				self.chunks[chunk].compile_constant(ChunkConstant::Real(r)),
 			Expr::String(s) => 
-				self.chunks[chunk].compile_constant(ChunkConstant::String(s.clone())),
+				self.chunks[chunk].compile_constant(ChunkConstant::String(s)),
 			Expr::Id(s) => {
 				let binding = ctx.get_binding(&s).expect("Referencing undefined binding");
 				match binding {

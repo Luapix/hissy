@@ -35,7 +35,7 @@ const fn base_value(t: ValueType) -> u64 {
 }
 
 pub const NIL:   Value = Value(base_value(ValueType::Nil));
-pub const FALSE: Value = Value(base_value(ValueType::Bool) | 0);
+pub const FALSE: Value = Value(base_value(ValueType::Bool));
 pub const TRUE:  Value = Value(base_value(ValueType::Bool) | 1);
 
 impl Value {
@@ -250,7 +250,7 @@ mod tests {
 	#[test]
 	fn test_reals() {
 		test_real(0.0);
-		test_real(3.1415926535897934);
+		test_real(3.141_592_653_589_793_6);
 		test_real(std::f64::INFINITY);
 		test_real(-std::f64::INFINITY);
 		match f64::try_from(&Value::from(std::f64::NAN)) {

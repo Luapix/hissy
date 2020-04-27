@@ -23,7 +23,7 @@ impl<T: Any> AsAny for T {
 pub trait Traceable {
 	/// Should call .mark() on all direct GCRef/Value children of self.
 	/// This is used during garbage collection.
-	fn mark(&self);
+	fn mark(&mut self);
 	/// Should call .unroot() on all direct GCRef/Value children of self.
 	/// This is used when placing an object in the GC heap, to remove all root references inside it.
 	fn unroot(&mut self);
@@ -64,15 +64,12 @@ impl GCWrapper {
 	///
 	/// Used in [`Value`], since a fat pointer doesn't fit into a `Value`
 	/// Possible since `GCWrapper` contains its object's VTable
-	pub fn fatten_pointer(ptr: *mut ()) -> *mut GCWrapper {
+	pub fn fatten_pointer(data: *mut ()) -> *mut GCWrapper {
 		// Safety: "vtable" is stored at base of GCWrapper thanks to #[repr(C)],
 		// and raw::TraitObject layout should correspond to actual trait object layout
 		unsafe {
-			let vtable: *mut () = ptr::read(ptr.cast());
-			mem::transmute(raw::TraitObject {
-				data: ptr,
-				vtable: vtable,
-			})
+			let vtable: *mut () = ptr::read(data.cast());
+			mem::transmute(raw::TraitObject { data, vtable })
 		}
 	}
 	
@@ -80,8 +77,8 @@ impl GCWrapper {
 		self.data.as_any().is::<T>()
 	}
 	
-	pub fn get<T: GC>(&mut self) -> Option<&mut T> {
-		self.data.as_any_mut().downcast_mut::<T>()
+	pub fn get<T: GC>(&self) -> Option<&T> {
+		self.data.as_any().downcast_ref::<T>()
 	}
 	
 	pub fn debug(&self) -> String {
@@ -129,13 +126,20 @@ pub struct GCRef<T: GC> {
 
 impl<T: GC> GCRef<T> {
 	pub(super) fn from_pointer(pointer: *mut GCWrapper, root: bool) -> GCRef<T> {
-		let new_ref = GCRef { root: root, pointer: pointer, phantom: PhantomData::<T> };
+		let mut new_ref = GCRef { root, pointer, phantom: PhantomData::<T> };
 		assert!(new_ref.wrapper().is_a::<T>(), "Cannot make GCRef<T> to non-T Object");
-		if root { new_ref.wrapper().signal_root(); }
+		if root { new_ref.wrapper_mut().signal_root(); }
 		new_ref
 	}
 	
-	fn wrapper(&self) -> &mut GCWrapper {
+	fn wrapper(&self) -> &GCWrapper {
+		// Safety: as long as the GC algorithm is well-behaved (it frees a reference
+		// before or in the same cycle as the referee), and the collecting process
+		// does not call this function, self.pointer will be valid.
+		unsafe { &*self.pointer }
+	}
+	
+	fn wrapper_mut(&mut self) -> &mut GCWrapper {
 		// Safety: as long as the GC algorithm is well-behaved (it frees a reference
 		// before or in the same cycle as the referee), and the collecting process
 		// does not call this function, self.pointer will be valid.
@@ -148,15 +152,15 @@ impl<T: GC> GCRef<T> {
 	pub fn unroot(&mut self) {
 		if self.root {
 			self.root = false;
-			self.wrapper().signal_unroot();
+			self.wrapper_mut().signal_unroot();
 		}
 	}
 	
 	/// Recursively calls `Traceable::mark` on subobjects.
 	/// 
 	/// THIS SHOULD NEVER BE USED OUTSIDE OF [`Traceable::mark`]!
-	pub fn mark(&self) {
-		self.wrapper().mark();
+	pub fn mark(&mut self) {
+		self.wrapper_mut().mark();
 	}
 }
 
@@ -193,14 +197,15 @@ impl<T: GC> Debug for GCRef<T> {
 /// Object maintaining all GC state.
 /// 
 /// Usually, only one should be created.
+#[derive(Default)]
 pub struct GCHeap {
 	objects: Vec<Box<GCWrapper>>,
 }
 
 impl GCHeap {
 	/// Create a new, empty GC heap.
-	pub fn new() -> GCHeap {
-		GCHeap { objects: Vec::new() }
+	pub fn new() -> Self {
+		Default::default()
 	}
 	
 	fn add<T: GC>(&mut self, v: T) -> &mut GCWrapper {

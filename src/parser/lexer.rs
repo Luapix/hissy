@@ -19,7 +19,7 @@ pub enum Token {
 	Newline, Indent, Dedent,
 }
 
-static KEYWORDS: [&'static str; 13] = [
+static KEYWORDS: [&str; 13] = [
 	"let", "if", "else", "while",
 	"not", "and", "or",
 	"nil", "true", "false",
@@ -38,7 +38,7 @@ fn parse_number(input: &str, is_integer: bool) -> Result<Token, String> {
 		}
 	}
 	input.parse::<f64>()
-		.map(|r| Token::Real(r))
+		.map(Token::Real)
 		.map_err(|_| "Error while parsing real literal".to_string())
 }
 
@@ -220,33 +220,30 @@ pub fn read_tokens(input: &str) -> Result<Tokens, String> {
 							'n' => '\n',
 							_ => return Err("Invalid escape sequence".to_string())
 						});
+					} else if c == '\\' {
+						escaping = true;
+					} else if c == '"' {
+						break;
 					} else {
-						if c == '\\' {
-							escaping = true;
-						} else if c == '"' {
-							break;
-						} else {
-							contents.push(c);
-						}
+						contents.push(c);
 					}
 				}
 				tokens.push(Token::String(contents));
+			} else if let Some(s) = parse_symbol(&mut it, c) {
+				tokens.push(Token::Symbol(s));
 			} else {
-				if let Some(s) = parse_symbol(&mut it, c) {
-					tokens.push(Token::Symbol(s));
-				} else {
-					return Err("Unexpected character: '".to_string() + &c.escape_default().collect::<String>() + "'")
-				}
+				return Err("Unexpected character: '".to_string() + &c.escape_default().collect::<String>() + "'")
 			}
 		}
 		
 		skip_chars(&mut it, &|c| c == ' ' || c == '\t');
 	}
-	Ok(Tokens { tokens: tokens, token_pos: token_pos })
+	Ok(Tokens { tokens, token_pos })
 }
 
 impl Tokens {
 	pub fn len(&self) -> usize { self.tokens.len() }
+	pub fn is_empty(&self) -> bool { self.tokens.is_empty() }
 }
 
 impl Parse for Tokens {

@@ -29,7 +29,7 @@ pub(crate) enum ChunkConstant {
 }
 
 impl ChunkConstant {
-	pub fn into_value(&self, heap: &mut GCHeap) -> Value {
+	pub fn to_value(&self, heap: &mut GCHeap) -> Value {
 		match self {
 			ChunkConstant::Nil => NIL,
 			ChunkConstant::Bool(b) => if *b { TRUE } else { FALSE },
@@ -67,7 +67,7 @@ pub(crate) struct Chunk {
 
 impl Chunk {
 	pub fn new(name: String) -> Chunk {
-		Chunk { name: name, nb_registers: 0, constants: vec![], upvalues: vec![], code: vec![] }
+		Chunk { name, nb_registers: 0, constants: vec![], upvalues: vec![], code: vec![] }
 	}
 	
 	pub fn from_bytes(it: &mut slice::Iter<u8>) -> Chunk {
@@ -162,7 +162,7 @@ impl Chunk {
 			format!("r{}", reg)
 		} else {
 			let cst = usize::try_from(255 - reg).unwrap();
-			format!("{}", self.constants[cst].repr())
+			self.constants[cst].repr()
 		}
 	}
 	
@@ -176,7 +176,7 @@ impl Chunk {
 		s.push_str(&format!("{} ({} registers; {} constants)\n",
 			self.name, self.nb_registers, self.constants.len()));
 		
-		if self.upvalues.len() > 0 {
+		if !self.upvalues.is_empty() {
 			let upv_str = self.upvalues.iter().fold(String::new(), |mut s, u| {
 				let ty = if u.reg >= MAX_REGISTERS { "u" } else { "r" };
 				write!(&mut s, "{} ({}{})", u.name, ty, u.reg % MAX_REGISTERS).unwrap();
@@ -193,7 +193,7 @@ impl Chunk {
 			match instr {
 				Nop => {},
 				Log => {
-					s.push_str(&format!("{}", self.format_reg(&mut it)));
+					s.push_str(&self.format_reg(&mut it));
 				},
 				Cpy | Neg | Not => {
 					s.push_str(&format!("{}, {}", self.format_reg(&mut it), self.format_reg(&mut it)));
@@ -209,10 +209,10 @@ impl Chunk {
 					s.push_str(&format!("{}, {}, {}", self.format_reg(&mut it), self.format_reg(&mut it), self.format_reg(&mut it)));
 				},
 				Ret => {
-					s.push_str(&format!("{}", self.format_reg(&mut it)));
+					s.push_str(&self.format_reg(&mut it));
 				},
 				Jmp => {
-					s.push_str(&format!("{}", self.format_rel_add(&mut it)));
+					s.push_str(&self.format_rel_add(&mut it));
 				},
 				Jit | Jif => {
 					s.push_str(&format!("{}, {}", self.format_rel_add(&mut it), self.format_reg(&mut it)));
@@ -247,7 +247,7 @@ impl Program {
 			chunks.push(Chunk::from_bytes(&mut it));
 		}
 		
-		Program { chunks: chunks }
+		Program { chunks }
 	}
 	
 	/// Serializes a `Program` object to a bytecode file.

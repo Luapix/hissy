@@ -7,7 +7,7 @@ use super::value::Value;
 use super::gc::{Traceable, GC, GCRef};
 
 impl Traceable for String {
-	fn mark(&self) {}
+	fn mark(&mut self) {}
 	fn unroot(&mut self) {}
 }
 
@@ -18,7 +18,7 @@ impl Traceable for Vec<Value> {
 		}
 	}
 	
-	fn mark(&self) {
+	fn mark(&mut self) {
 		for el in self {
 			el.mark();
 		}
@@ -32,7 +32,7 @@ impl<T: GC> Traceable for Vec<GCRef<T>> {
 		}
 	}
 	
-	fn mark(&self) {
+	fn mark(&mut self) {
 		for el in self {
 			el.mark();
 		}
@@ -63,7 +63,7 @@ impl Upvalue {
 }
 
 impl Traceable for Upvalue {
-	fn mark(&self) {
+	fn mark(&mut self) {
 		if let UpvalueData::OnHeap(val) = self.0.borrow().deref() { val.mark(); }
 	}
 	fn unroot(&mut self) {
@@ -95,7 +95,7 @@ impl Closure {
 }
 
 impl Traceable for Closure {
-	fn mark(&self) { self.upvalues.mark(); }
+	fn mark(&mut self) { self.upvalues.mark(); }
 	fn unroot(&mut self) { self.upvalues.unroot(); }
 }
 
@@ -108,6 +108,8 @@ impl fmt::Debug for Closure {
 
 #[cfg(test)]
 mod tests {
+	#![allow(clippy::blacklisted_name)]
+	
 	use super::super::gc::GCHeap;
 	
 	#[test]
@@ -132,7 +134,7 @@ mod tests {
 				let bar = heap.make_ref(String::from("bar"));
 				heap.collect();
 				heap.inspect();
-				_l = heap.make_ref(vec![foo.clone(), bar.clone()]);
+				_l = heap.make_ref(vec![foo, bar]);
 				heap.collect();
 				heap.inspect();
 			}
@@ -166,7 +168,7 @@ mod tests {
 				let bar = heap.make_value(String::from("bar"));
 				heap.collect();
 				heap.inspect();
-				_l = heap.make_value(vec![foo.clone(), bar.clone()]);
+				_l = heap.make_value(vec![foo, bar]);
 				heap.collect();
 				heap.inspect();
 			}

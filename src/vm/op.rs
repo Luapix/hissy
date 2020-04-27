@@ -121,7 +121,14 @@ impl Value {
 		}
 	}
 	
-	pub fn eq(&self, other: &Value) -> bool {
+	basic_num_op!(lth, |a,b| a < b);
+	basic_num_op!(leq, |a,b| a <= b);
+	basic_num_op!(gth, |a,b| a > b);
+	basic_num_op!(geq, |a,b| a >= b);
+}
+
+impl PartialEq for Value {
+	fn eq(&self, other: &Value) -> bool {
 		match (self.get_type(), other.get_type()) {
 			(Nil, Nil) => true,
 			(Bool, Bool) => bool::try_from(self).unwrap() == bool::try_from(other).unwrap(),
@@ -135,9 +142,4 @@ impl Value {
 				}
 		}
 	}
-	
-	basic_num_op!(lth, |a,b| a < b);
-	basic_num_op!(leq, |a,b| a <= b);
-	basic_num_op!(gth, |a,b| a > b);
-	basic_num_op!(geq, |a,b| a >= b);
 }

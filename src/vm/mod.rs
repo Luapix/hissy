@@ -17,8 +17,8 @@
 //! - `GetUp(u, r)`, `SetUp(u, rc)`: Gets or sets an upvalue with a register
 //! - `Neg/Not(rc, r)`: Computes `-rc`/`not rc` and storing the result in `r`
 //! - `Or/And/Eq/Neq/Lth/Leq/Gth/Geq/Add/Sub/Mul/Div/Mod/Pow(rc1, rc2, r)`:
-//! 	
-//! 	Applies the corresponding binary operation to `rc1` and `rc2`, storing the result in `r`
+//!    
+//!    Applies the corresponding binary operation to `rc1` and `rc2`, storing the result in `r`
 //! - `Func(c, r)`: Creates a closure from the chunk with index `c`, storing the result in `r`
 //! - `Call(r1, r2, r3)`: Calls the function in `r1`, using arguments starting at `r2`, storing the result in `r3`
 //! - `Ret(rc)`: Returns `rc` from the current function
@@ -128,9 +128,9 @@ impl Registers {
 			let reg2 = self.window_start + usize::from(reg);
 			ValueRef::Reg(self.registers.get(reg2).expect("Invalid register"))
 		} else {
-			let cst = usize::try_from(255 - reg).unwrap();
-			let value = chunk.constants.get(cst).expect("Invalid constant").clone();
-			let temp = value.into_value(heap);
+			let cst_idx = usize::try_from(255 - reg).unwrap();
+			let cst = chunk.constants.get(cst_idx).expect("Invalid constant");
+			let temp = cst.to_value(heap);
 			ValueRef::Temp(temp)
 		}
 	}
@@ -156,13 +156,13 @@ impl Registers {
 }
 
 
-fn read_rel_add<'a>(it: &mut slice::Iter<'a, u8>, code: &'a Vec<u8>) -> usize {
+fn read_rel_add<'a>(it: &mut slice::Iter<'a, u8>, code: &'a [u8]) -> usize {
 	let pos = isize::try_from(code.len() - it.len()).unwrap();
 	let rel_add = isize::from(read_i8(it));
 	usize::try_from(pos + rel_add).expect("Jumped back too far")
 }
 
-fn iter_from<'a>(code: &'a Vec<u8>, pos: usize) -> slice::Iter<'a, u8> {
+fn iter_from(code: &[u8], pos: usize) -> slice::Iter<u8> {
 	code.get(pos..).expect("Jumped forward too far").iter()
 }
 
@@ -189,7 +189,7 @@ impl<'a> VMState<'a> {
 	}
 	
 	pub fn pos(&self) -> usize {
-		usize::try_from(&self.chunk.code.len() - self.it.len()).unwrap()
+		usize::try_from(self.chunk.code.len() - self.it.len()).unwrap()
 	}
 	
 	pub fn call(&mut self, program: &'a Program, func: GCRef<Closure>, args_start: u8, ret_reg: Option<u8>) {
