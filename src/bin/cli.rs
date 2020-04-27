@@ -1,13 +1,31 @@
 use std::env;
+use std::fmt::{Display, Debug};
 use std::fs::read_to_string;
 use std::path::Path;
 
-use hissy::parser::lexer::{Tokens, read_tokens};
 use hissy::parser;
-use hissy::parser::{ast::ProgramAST};
-use hissy::vm::{run_program, gc::GCHeap, chunk::Program};
-use hissy::compiler::Compiler;
-use hissy::{format_error, display_result, debug_result, display_error};
+use hissy::parser::{lexer::{Tokens, read_tokens}, ast::ProgramAST};
+use hissy::compiler::{Program, Compiler};
+use hissy::vm::{gc::GCHeap, run_program};
+
+
+fn format_error<T, U: Display>(r: Result<T, U>, msg: &str) -> Result<T, String> {
+	r.map_err(|e| format!("{}: {}", msg, e))
+}
+
+fn display_result<T: Display>(r: Result<T, String>) {
+	println!("{}", r.map_or_else(|m| format!("❎  {}", m), |m| format!("☑  Result: {}", m)));
+}
+
+fn debug_result<T: Debug>(r: Result<T, String>) {
+	println!("{}", r.map_or_else(|m| format!("❎  {}", m), |m| format!("☑  Result: {:#?}", m)));
+}
+
+fn display_error(r: Result<(), String>) {
+	if let Err(e) = r {
+		println!("❎  {}", e);
+	}
+}
 
 
 fn lex(file: &str) -> Result<Tokens, String> {

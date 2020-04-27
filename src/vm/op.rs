@@ -3,7 +3,7 @@ use std::convert::TryFrom;
 use super::value::{Value, ValueType::*};
 use super::gc::GCWrapper;
 
-pub enum NumPair {
+enum NumPair {
 	Ints(i32, i32),
 	Reals(f64, f64),
 	NaN,
@@ -37,7 +37,7 @@ impl Value {
 		}
 	}
 	
-	pub fn get_num_pair(&self, other: &Value) -> NumPair {
+	fn get_num_pair(&self, other: &Value) -> NumPair {
 		if !self.is_numeric() { return NumPair::NaN; }
 		if !other.is_numeric() { return NumPair::NaN; }
 		if self.get_type() == Int && other.get_type() == Int {

@@ -102,7 +102,7 @@ fn get_next_index(it: &mut Peekable<CharIndices>, end: usize) -> usize {
 }
 
 pub struct Tokens {
-	tokens: Vec<Token>,
+	pub tokens: Vec<Token>,
 	token_pos: Vec<LineCol>,
 }
 

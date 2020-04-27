@@ -1,17 +1,17 @@
 
+pub(crate) mod chunk;
+pub use chunk::Program;
+
+
 use std::ops::{Deref, DerefMut};
 use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::convert::TryFrom;
 
-use super::parser::{parse, ast::{Expr, Stat, Cond, BinOp, UnaOp}};
-use super::vm::{MAX_REGISTERS, chunk::{Chunk, ChunkConstant, ChunkUpvalue, Program}, InstrType};
+use crate::parser::{parse, ast::{Expr, Stat, Cond, BinOp, UnaOp}};
+use crate::vm::{MAX_REGISTERS, InstrType};
+use chunk::{Chunk, ChunkConstant, ChunkUpvalue};
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum RegContent {
-	Temp,
-	Local,
-}
 
 fn emit_jump_to(chunk: &mut Chunk, add: usize) {
 	let from = chunk.code.len();
@@ -29,7 +29,7 @@ fn fill_in_jump_from(chunk: &mut Chunk, add: usize) {
 	chunk.code[add] = rel_jmp as u8;
 }
 
-pub struct ChunkRegisters {
+struct ChunkRegisters {
 	required: u16,
 	used: u16,
 	local_cnt: u16,
@@ -109,7 +109,7 @@ impl ChunkRegisters {
 }
 
 
-pub enum Binding {
+enum Binding {
 	Local(u8),
 	Upvalue(u8),
 }
@@ -127,9 +127,9 @@ impl Binding {
 }
 
 
-pub type BlockContext = HashMap<String, u8>;
+type BlockContext = HashMap<String, u8>;
 
-pub struct ChunkContext {
+struct ChunkContext {
 	regs: ChunkRegisters,
 	blocks: Vec<BlockContext>,
 	upvalues: Vec<ChunkUpvalue>,
@@ -186,7 +186,7 @@ impl ChunkContext {
 }
 
 
-pub struct Context {
+struct Context {
 	chunks: Vec<ChunkContext>,
 }
 

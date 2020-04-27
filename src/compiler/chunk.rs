@@ -5,12 +5,13 @@ use std::convert::TryFrom;
 use std::fs;
 use std::slice;
 
-use super::{MAX_REGISTERS, InstrType, InstrType::*, value::{NIL, TRUE, FALSE, Value}, gc::GCHeap, serial::*};
+use crate::vm::{MAX_REGISTERS, InstrType, InstrType::*, value::{NIL, TRUE, FALSE, Value}, gc::GCHeap};
+use crate::serial::*;
 
 
 #[derive(TryFromPrimitive)]
 #[repr(u8)]
-pub enum ConstantType {
+enum ConstantType {
 	Nil,
 	Bool,
 	Int,
@@ -19,7 +20,7 @@ pub enum ConstantType {
 }
 
 #[derive(PartialEq)]
-pub enum ChunkConstant {
+pub(crate) enum ChunkConstant {
 	Nil,
 	Bool(bool),
 	Int(i32),
@@ -50,12 +51,12 @@ impl ChunkConstant {
 }
 
 
-pub struct ChunkUpvalue {
+pub(crate) struct ChunkUpvalue {
 	pub name: String,
 	pub reg: u8,
 }
 
-pub struct Chunk {
+pub(crate) struct Chunk {
 	pub name: String,
 	pub nb_registers: u16,
 	pub constants: Vec<ChunkConstant>,
@@ -230,7 +231,7 @@ impl Chunk {
 }
 
 pub struct Program {
-	pub chunks: Vec<Chunk>,
+	pub(crate) chunks: Vec<Chunk>,
 }
 
 impl Program {

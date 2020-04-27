@@ -10,7 +10,7 @@ pub struct Value(u64);
 
 #[derive(TryFromPrimitive, PartialEq)]
 #[repr(u64)]
-pub enum ValueType {
+pub(super) enum ValueType {
 	Real,
 	Nil,
 	Bool,
@@ -33,7 +33,7 @@ pub const FALSE: Value = Value(base_value(ValueType::Bool) | 0);
 pub const TRUE:  Value = Value(base_value(ValueType::Bool) | 1);
 
 impl Value {
-	pub fn get_type(&self) -> ValueType {
+	pub(super) fn get_type(&self) -> ValueType {
 		if self.0 < TAG_MIN {
 			ValueType::Real
 		} else {
@@ -41,7 +41,7 @@ impl Value {
 		}
 	}
 	
-	pub fn from_pointer(pointer: *mut GCWrapper, root: bool) -> Value {
+	pub(super) fn from_pointer(pointer: *mut GCWrapper, root: bool) -> Value {
 		let pointer = pointer as *mut () as u64; // Erases fat pointer data
 		debug_assert!(pointer & DATA_MASK == pointer, "Object pointer has too many bits to fit in Value");
 		let new_val = Value(base_value(if root { ValueType::Root } else { ValueType::Ref }) + pointer);
@@ -49,7 +49,7 @@ impl Value {
 		new_val
 	}
 	
-	pub fn get_pointer(&self) -> Option<&mut GCWrapper> {
+	pub(super) fn get_pointer(&self) -> Option<&mut GCWrapper> {
 		let t = self.get_type();
 		if t == ValueType::Root || t == ValueType::Ref {
 			let pointer = GCWrapper::fatten_pointer((self.0 & DATA_MASK) as *mut ());
@@ -60,10 +60,6 @@ impl Value {
 		} else {
 			None
 		}
-	}
-	
-	pub fn is_nil(&self) -> bool {
-		self.get_type() == ValueType::Nil
 	}
 	
 	pub fn unroot(&mut self) {

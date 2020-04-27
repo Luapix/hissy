@@ -28,13 +28,13 @@ impl<T: 'static + Traceable + AsAny + Debug> GC for T {}
 
 
 #[repr(C)]
-pub struct GCWrapper_<T: ?Sized> {
+pub(super) struct GCWrapper_<T: ?Sized> {
 	vtable: *mut (),
 	marked: bool,
 	roots: u32,
 	data: T,
 }
-pub type GCWrapper = GCWrapper_<dyn GC>;
+pub(super) type GCWrapper = GCWrapper_<dyn GC>;
 // Note: we need to use this GCWrapper_<T: ?Sized> / GCWrapper indirection
 // because of Rust's still partial support for custom DSTs.
 
@@ -92,7 +92,7 @@ impl GCWrapper {
 		}
 	}
 	
-	pub fn reset(&mut self) {
+	fn reset(&mut self) {
 		self.marked = false;
 	}
 }
@@ -105,13 +105,13 @@ impl Debug for GCWrapper {
 
 
 pub struct GCRef<T: GC> {
-	pub root: bool,
-	pub pointer: *mut GCWrapper,
+	pub(super) root: bool,
+	pub(super) pointer: *mut GCWrapper,
 	phantom: PhantomData<T>,
 }
 
 impl<T: GC> GCRef<T> {
-	pub fn from_pointer(pointer: *mut GCWrapper, root: bool) -> GCRef<T> {
+	pub(super) fn from_pointer(pointer: *mut GCWrapper, root: bool) -> GCRef<T> {
 		let new_ref = GCRef { root: root, pointer: pointer, phantom: PhantomData::<T> };
 		assert!(new_ref.wrapper().is_a::<T>(), "Cannot make GCRef<T> to non-T Object");
 		if root { new_ref.wrapper().signal_root(); }
@@ -134,10 +134,6 @@ impl<T: GC> GCRef<T> {
 	
 	pub fn mark(&self) {
 		self.wrapper().mark();
-	}
-	
-	pub fn reset(&self) {
-		self.wrapper().reset();
 	}
 }
 

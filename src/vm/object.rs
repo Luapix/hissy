@@ -40,12 +40,12 @@ impl<T: GC> Traceable for Vec<GCRef<T>> {
 }
 
 #[derive(Clone)]
-pub enum UpvalueData {
+pub(super) enum UpvalueData {
 	OnStack(usize),
 	OnHeap(Value),
 }
 
-pub struct Upvalue(RefCell<UpvalueData>, String);
+pub(super) struct Upvalue(RefCell<UpvalueData>, String);
 
 impl Upvalue {
 	pub fn new(stack_idx: usize, name: String) -> Upvalue {
@@ -82,7 +82,7 @@ impl fmt::Debug for Upvalue {
 }
 
 
-pub struct Closure {
+pub(super) struct Closure {
 	pub chunk_id: u8,
 	pub chunk_name: String,
 	pub upvalues: Vec<GCRef<Upvalue>>,

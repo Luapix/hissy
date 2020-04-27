@@ -1,28 +1,29 @@
 
+pub mod gc;
+pub mod value;
+mod op;
+mod object;
+
+
 use std::collections::HashMap;
 use num_enum::TryFromPrimitive;
 use std::ops::Deref;
 use std::convert::TryFrom;
 use std::{slice, iter};
 
-pub mod gc;
-pub mod value;
-pub mod op;
-mod serial;
-pub mod chunk;
-pub mod object;
-
-pub const MAX_REGISTERS: u8 = 128;
+use crate::serial::*;
+use crate::compiler::chunk::{Chunk, Program};
 
 use gc::{GCHeap, GCRef};
 use value::{Value, NIL};
-use serial::*;
-use chunk::{Chunk, Program};
 use object::{Upvalue, UpvalueData, Closure};
+
+
+pub(crate) const MAX_REGISTERS: u8 = 128;
 
 #[derive(Debug, TryFromPrimitive)]
 #[repr(u8)]
-pub enum InstrType {
+pub(crate) enum InstrType {
 	Nop,
 	Cpy, GetUp, SetUp,
 	Neg, Add, Sub, Mul, Div, Mod, Pow,
@@ -136,7 +137,7 @@ fn iter_from<'a>(code: &'a Vec<u8>, pos: usize) -> slice::Iter<'a, u8> {
 }
 
 
-pub struct VMState<'a> {
+struct VMState<'a> {
 	regs: Registers,
 	chunk_id: usize,
 	chunk: &'a Chunk,
