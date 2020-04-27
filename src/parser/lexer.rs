@@ -8,6 +8,7 @@ use smallstr::SmallString;
 
 type SymbolStr = SmallString<[u8;6]>;
 
+/// A language token.
 #[derive(Debug, PartialEq, Clone)]
 pub enum Token {
 	Symbol(SymbolStr),
@@ -101,6 +102,9 @@ fn get_next_index(it: &mut Peekable<CharIndices>, end: usize) -> usize {
 	it.peek().map_or(end, |(i,_)| *i)
 }
 
+/// A [`Token`] sequence, suitable for use with peg.rs parsers.
+/// 
+/// Can be Displayed to inspect contents.
 pub struct Tokens {
 	pub tokens: Vec<Token>,
 	token_pos: Vec<LineCol>,
@@ -117,6 +121,7 @@ impl fmt::Display for Tokens {
 	}
 }
 
+/// Lexes a string slice into a `Tokens` container.
 pub fn read_tokens(input: &str) -> Result<Tokens, String> {
 	let mut tokens = vec![];
 	let mut token_pos = vec![];

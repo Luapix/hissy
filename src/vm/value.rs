@@ -6,6 +6,12 @@ use std::convert::TryFrom;
 use super::gc::{GC, GCRef, GCWrapper};
 
 
+/// A Hissy value.
+/// 
+/// This value can be of the following types: nil, bool, int, real, or a GC object.
+/// In the latter case, `Value` is the untyped equivalent of a [`GCRef`], and can be converted to/from one.
+/// 
+/// Internally, `Value`s are stored using NaN-tagging/boxing, so that non-object values are stored without heap allocation.
 pub struct Value(u64);
 
 #[derive(TryFromPrimitive, PartialEq)]
@@ -62,6 +68,11 @@ impl Value {
 		}
 	}
 	
+	/// Marks the `Value` as no longer a root reference.
+	/// 
+	/// THIS SHOULD NEVER BE USED OUTSIDE OF [`Traceable::unroot`]!
+	/// 
+	/// [`Traceable::unroot`]: ../gc/trait.Traceable.html#tymethod.unroot
 	pub fn unroot(&mut self) {
 		if self.get_type() == ValueType::Root {
 			self.0 = base_value(ValueType::Ref) + (self.0 & DATA_MASK);
@@ -69,12 +80,18 @@ impl Value {
 		}
 	}
 	
+	/// Recursively calls `Traceable::mark()` on subobjects.
+	/// 
+	/// THIS SHOULD NEVER BE USED OUTSIDE OF [`Traceable::mark`]!
+	/// 
+	/// [`Traceable::mark`]: ../gc/trait.Traceable.html#tymethod.mark
 	pub fn mark(&self) {
 		if let Some(p) = self.get_pointer() {
 			p.mark()
 		}
 	}
 	
+	/// Outputs a string representation of the `Value` depending on its internal type.
 	pub fn repr(&self) -> String {
 		match self.get_type() {
 			ValueType::Bool => bool::try_from(self).unwrap().to_string(),
@@ -103,12 +120,14 @@ impl fmt::Debug for Value {
 }
 
 
+/// Converts a [`GCRef`] to a [`Value`], effectively erasing its type.
 impl<T: GC> From<GCRef<T>> for Value {
 	fn from(gc_ref: GCRef<T>) -> Value {
 		Value::from_pointer(gc_ref.pointer, gc_ref.root)
 	}
 }
 
+/// Attempts to convert a [`Value`] to a [`GCRef<T>`]. Fails if the `Value` does not actually contain a `T`.
 impl<T: GC> TryFrom<Value> for GCRef<T> {
 	type Error = &'static str;
 	
@@ -127,6 +146,7 @@ impl<T: GC> TryFrom<Value> for GCRef<T> {
 }
 
 
+/// Clones a `Value`. Note that the new object will be a root reference.
 impl Clone for Value {
 	fn clone(&self) -> Self {
 		if let Some(pointer) = self.get_pointer() {
@@ -144,12 +164,14 @@ impl Drop for Value {
 }
 
 
+/// Converts an `i32` into a `Value` directly (no heap allocation is performed).
 impl From<i32> for Value {
 	fn from(i: i32) -> Self {
 		Value(base_value(ValueType::Int) + (i as u32 as u64))
 	}
 }
 
+/// Converts an `f64` into a `Value` directly (no heap allocation is performed).
 impl From<f64> for Value {
 	fn from(d: f64) -> Self {
 		debug_assert!(f64::to_bits(d) <= TAG_MIN, "Trying to fit 'fat' NaN into Value");
@@ -157,12 +179,14 @@ impl From<f64> for Value {
 	}
 }
 
+/// Converts a `bool` into a `Value` directly (no heap allocation is performed).
 impl From<bool> for Value {
 	fn from(b: bool) -> Self {
 		Value(base_value(ValueType::Bool) | (if b { 1 } else { 0 }))
 	}
 }
 
+/// Attempts to convert a `Value` to an `i32`. Fails if the `Value` does not contain an integer.
 impl TryFrom<&Value> for i32 {
 	type Error = &'static str;
 	fn try_from(value: &Value) -> std::result::Result<Self, &'static str> {
@@ -175,6 +199,7 @@ impl TryFrom<&Value> for i32 {
 	}
 }
 
+/// Attempts to convert a `Value` to an `f64`. Fails if the Value does not contain a real.
 impl TryFrom<&Value> for f64 {
 	type Error = &'static str;
 	fn try_from(value: &Value) -> std::result::Result<Self, &'static str> {
@@ -186,6 +211,7 @@ impl TryFrom<&Value> for f64 {
 	}
 }
 
+/// Attempts to convert a `Value` to a `bool`. Fails if the Value does not contain a boolean.
 impl TryFrom<&Value> for bool {
 	type Error = &'static str;
 	fn try_from(value: &Value) -> std::result::Result<Self, &'static str> {

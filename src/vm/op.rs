@@ -21,7 +21,20 @@ macro_rules! basic_num_op {
 	};
 }
 
+/// Provides common operations on `Value`s.
+///
+/// Notably, numeric `Value`s can be added, substracted, multiplied, divided, `mod`ed, exponentiated, and compared.
+/// The result will have an appropriate numeric type (e.g. int + int = int, int + real = real).
+/// 
+/// Boolean `Value`s can be 'or'ed, 'and'ed, and 'not'ed.
+///
+/// If the internal types of the `Value`s aren't compatible, `None` will be returned.
+/// 
+/// `Value`s of any type can be compared for equality. Two values of different types will always be unequal,
+/// except for examples such as 2 == 2.0.
 impl Value {
+	
+	/// Returns whether the `Value` is numeric, ie. contains an integer or real.
 	pub fn is_numeric(&self) -> bool {
 		match self.get_type() {
 			Int | Real => true,
@@ -29,6 +42,7 @@ impl Value {
 		}
 	}
 	
+	/// Casts the `Value` to an `f64` if it is numeric. Otherwise, panics.
 	pub fn cast_real(&self) -> f64 {
 		match self.get_type() {
 			Int => i32::try_from(self).unwrap() as f64,

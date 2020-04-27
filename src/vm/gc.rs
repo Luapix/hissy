@@ -8,6 +8,7 @@ use std::ops::Deref;
 use super::value::Value;
 
 
+/// An auto-implemented trait to allow easier access to Any methods.
 pub trait AsAny {
 	fn as_any(&self) -> &dyn Any;
 	fn as_any_mut(&mut self) -> &mut dyn Any;
@@ -18,11 +19,19 @@ impl<T: Any> AsAny for T {
 	fn as_any_mut(&mut self) -> &mut dyn Any { self }
 }
 
+/// This trait allows the GC to trace through objects in its heap.
 pub trait Traceable {
-	fn mark(&self); // Call .mark() on direct GCRef/Value children
-	fn unroot(&mut self); // Call .unroot() on direct GCRef/Value children
+	/// Should call .mark() on all direct GCRef/Value children of self.
+	/// This is used during garbage collection.
+	fn mark(&self);
+	/// Should call .unroot() on all direct GCRef/Value children of self.
+	/// This is used when placing an object in the GC heap, to remove all root references inside it.
+	fn unroot(&mut self);
 }
 
+/// An auto-implemented trait with all the supertraits required for GC values.
+/// 
+/// To allow a custom type to be placed in the heap, implementing Traceable and Debug should be enough.
 pub trait GC: 'static + Traceable + AsAny + Debug {}
 impl<T: 'static + Traceable + AsAny + Debug> GC for T {}
 
@@ -51,9 +60,10 @@ impl GCWrapper {
 		})
 	}
 	
-	// Returns a fat pointer to GCWrapper from a thin void pointer
-	// Used in Value, since a fat pointer doesn't fit into a Value
-	// Possible since GCWrapper contains its object's VTable
+	/// Returns a fat pointer to GCWrapper from a thin void pointer.
+	///
+	/// Used in [`Value`], since a fat pointer doesn't fit into a `Value`
+	/// Possible since `GCWrapper` contains its object's VTable
 	pub fn fatten_pointer(ptr: *mut ()) -> *mut GCWrapper {
 		// Safety: "vtable" is stored at base of GCWrapper thanks to #[repr(C)],
 		// and raw::TraitObject layout should correspond to actual trait object layout
@@ -104,6 +114,13 @@ impl Debug for GCWrapper {
 }
 
 
+/// A typed reference to a GC object.
+///
+/// Obtained through `TryFrom<Value>` or [`GCHeap::make_ref`].
+///
+/// This is the typed equivalent of a [`Value`] containing an object, and can be converted to/from one.
+/// 
+/// [`Value`]: ../value/struct.Value.html
 pub struct GCRef<T: GC> {
 	pub(super) root: bool,
 	pub(super) pointer: *mut GCWrapper,
@@ -125,6 +142,9 @@ impl<T: GC> GCRef<T> {
 		unsafe { &mut *self.pointer }
 	}
 	
+	/// Marks the `GCRef` as no longer a root reference.
+	/// 
+	/// THIS SHOULD NEVER BE USED OUTSIDE OF [`Traceable::unroot`]!
 	pub fn unroot(&mut self) {
 		if self.root {
 			self.root = false;
@@ -132,12 +152,16 @@ impl<T: GC> GCRef<T> {
 		}
 	}
 	
+	/// Recursively calls `Traceable::mark` on subobjects.
+	/// 
+	/// THIS SHOULD NEVER BE USED OUTSIDE OF [`Traceable::mark`]!
 	pub fn mark(&self) {
 		self.wrapper().mark();
 	}
 }
 
 
+/// Clones a `GCRef`. Note that the new object will be a root reference.
 impl<T: GC> Clone for GCRef<T> {
 	fn clone(&self) -> Self {
 		GCRef::from_pointer(self.pointer, true)
@@ -166,11 +190,15 @@ impl<T: GC> Debug for GCRef<T> {
 }
 
 
+/// Object maintaining all GC state.
+/// 
+/// Usually, only one should be created.
 pub struct GCHeap {
 	objects: Vec<Box<GCWrapper>>,
 }
 
 impl GCHeap {
+	/// Create a new, empty GC heap.
 	pub fn new() -> GCHeap {
 		GCHeap { objects: Vec::new() }
 	}
@@ -181,14 +209,19 @@ impl GCHeap {
 		self.objects.push(wrapper);
 		self.objects.last_mut().unwrap()
 	}
-
+	
+	/// Place an object implementing GC into the heap, returning a typed reference to it.
 	pub fn make_ref<T: GC>(&mut self, v: T) -> GCRef<T> {
 		GCRef::from_pointer(self.add(v), true) // Root new object
 	}
+	/// Place an object implementing GC into the heap, returning an untyped reference to it.
 	pub fn make_value<T: GC>(&mut self, v: T) -> Value {
 		Value::from_pointer(self.add(v), true) // Root new object
 	}
 	
+	/// Delete dead objects from heap.
+	/// 
+	/// This uses [`Traceable.mark`] to determine all live objects.
 	pub fn collect(&mut self) {
 		for wrapper in self.objects.iter_mut() {
 			if wrapper.roots > 0 {
@@ -203,6 +236,7 @@ impl GCHeap {
 		}
 	}
 	
+	/// Inspect current heap contents. Prints to standard output.
 	pub fn inspect(&self) {
 		println!("== GC inspect ==");
 		for wrapper in self.objects.iter() {
@@ -210,19 +244,22 @@ impl GCHeap {
 		}
 	}
 	
+	/// Returns the number of (live or not) objects in the heap.
 	pub fn size(&self) -> usize {
 		self.objects.len()
 	}
 	
+	/// Returns whether the heap is empty (dead but not yet collected objects included).
 	pub fn is_empty(&self) -> bool {
 		self.objects.is_empty()
 	}
 }
 
-// The Drop implementation for GCHeap is only a warning; the user is responsible
-// for making sure the GCHeap has been entirely collected before dropping it
-// (dropping all root references and .collect() should be enough)
-
+/// The `Drop` implementation for `GCHeap` does not collect all remaining objects;
+/// it simply prints a warning if the heap is not empty.
+/// 
+/// The user is responsible for making sure the `GCHeap` has been entirely collected before dropping it
+/// (dropping all root references and calling [`GCHeap::collect()`] should be enough).
 impl Drop for GCHeap {
 	fn drop(&mut self) {
 		if !self.objects.is_empty() {

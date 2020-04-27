@@ -230,11 +230,14 @@ impl Chunk {
 	}
 }
 
+/// A data structure representing a compiled program (ie. Hissy bytecode).
+/// Can be serialized to and from a file (usually under the extension .hic, for Hissy Instruction Code).
 pub struct Program {
 	pub(crate) chunks: Vec<Chunk>,
 }
 
 impl Program {
+	/// Reads a `Program` from a bytecode file.
 	pub fn from_file<T: AsRef<Path>>(path: T) -> Program {
 		let contents = fs::read(path).expect("Unable to read chunk");
 		
@@ -247,6 +250,7 @@ impl Program {
 		Program { chunks: chunks }
 	}
 	
+	/// Serializes a `Program` object to a bytecode file.
 	pub fn to_file<T: AsRef<Path>>(&self, path: T) -> std::io::Result<()> {
 		let mut bytes = vec![];
 		for chunk in &self.chunks {
@@ -255,6 +259,8 @@ impl Program {
 		fs::write(path, &bytes)
 	}
 	
+	/// Returns a string representation of the bytecode.
+	/// Corresponds to the CLI's "list" output.
 	pub fn disassemble(&self) -> String {
 		let mut s = String::new();
 		

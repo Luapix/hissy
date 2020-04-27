@@ -1,4 +1,5 @@
 
+/// A binary operator.
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum BinOp {
 	Plus, Minus,
@@ -9,12 +10,14 @@ pub enum BinOp {
 	And, Or,
 }
 
+/// A unary operator.
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum UnaOp {
 	Not,
 	Minus,
 }
 
+/// An expression (literals and operations).
 #[derive(Debug, PartialEq, Clone)]
 pub enum Expr {
 	Nil,
@@ -33,14 +36,17 @@ pub enum Expr {
 	Function(Vec<String>, Vec<Stat>),
 }
 
+/// The guard on a condition branch (else / else if).
 #[derive(Debug, PartialEq, Clone)]
 pub enum Cond {
 	If(Expr),
 	Else,
 }
 
+/// A branch of a condition (condition + block).
 pub type Branch = (Cond, Vec<Stat>);
 
+/// A type description.
 #[derive(Debug, PartialEq, Clone)]
 pub enum Type {
 	Any,
@@ -48,6 +54,7 @@ pub enum Type {
 	Function(Vec<Type>, Box<Type>),
 }
 
+/// A statement.
 #[derive(Debug, PartialEq, Clone)]
 pub enum Stat {
 	ExprStat(Expr),
@@ -59,4 +66,5 @@ pub enum Stat {
 	Return(Expr),
 }
 
+/// A Hissy program.
 pub type ProgramAST = Vec<Stat>;

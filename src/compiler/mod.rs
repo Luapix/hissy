@@ -238,11 +238,13 @@ impl DerefMut for Context {
 }
 
 
+/// A struct holding state necessary to compilation.
 pub struct Compiler {
 	chunks: Vec<Chunk>,
 }
 
 impl Compiler {
+	/// Creates a new `Compiler` object.
 	pub fn new() -> Compiler {
 		Compiler { chunks: Vec::new() }
 	}
@@ -487,6 +489,7 @@ impl Compiler {
 		u8::try_from(chunk_id).expect("Too many chunks")
 	}
 	
+	/// Compiles a string slice containing Hissy code into a [`Program`], consuming the `Compiler`.
 	pub fn compile_program(mut self, input: &str) -> Result<Program, String> {
 		let ast = parse(input)?;
 		let mut ctx = Context::new();
