@@ -158,7 +158,7 @@ impl<T: GC> Drop for GCRef<T> {
 impl<T: GC> Deref for GCRef<T> {
 	type Target = T;
 	
-	fn deref(&self) -> &Self::Target {
+	fn deref(&self) -> &T {
 		self.wrapper().get::<T>().unwrap()
 	}
 }
@@ -207,8 +207,8 @@ impl GCHeap {
 		}
 	}
 	
-	pub fn examine(&self) {
-		println!("== GC examine ==");
+	pub fn inspect(&self) {
+		println!("== GC inspect ==");
 		for wrapper in self.objects.iter() {
 			println!("{}: {} roots", wrapper.debug(), wrapper.roots);
 		}

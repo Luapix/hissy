@@ -1,8 +1,9 @@
 
+use std::collections::HashMap;
 use num_enum::TryFromPrimitive;
 use std::ops::Deref;
 use std::convert::TryFrom;
-use std::slice;
+use std::{slice, iter};
 
 pub mod gc;
 pub mod value;
@@ -17,7 +18,7 @@ use gc::{GCHeap, GCRef};
 use value::{Value, NIL};
 use serial::*;
 use chunk::{Chunk, Program};
-use object::Closure;
+use object::{Upvalue, UpvalueData, Closure};
 
 #[derive(Debug, TryFromPrimitive)]
 #[repr(u8)]
@@ -33,12 +34,16 @@ pub enum InstrType {
 }
 
 
+struct ReturnParams {
+	add: usize,
+	reg: u8,
+}
+
 struct ExecRecord {
-	chunk_id: usize,
-	return_add: usize,
-	return_reg: u8,
-	reg_win_start: usize,
-	reg_win_end: usize,
+	closure: GCRef<Closure>,
+	upvalues: HashMap<u8, GCRef<Upvalue>>,
+	return_params: Option<ReturnParams>,
+	reg_win: (usize, usize),
 }
 
 
@@ -74,8 +79,9 @@ impl Registers {
 	}
 	
 	pub fn reset_window(&mut self, start: usize, end: usize) {
+		self.registers.splice(self.window_start.., iter::repeat(NIL).take(end.saturating_sub(self.window_start)));
+		// Note: self.registers.resize(end, NIL) is more economical, but less precise
 		self.window_start = start;
-		self.registers.resize(end, NIL);
 	}
 	
 	pub fn allocate(&mut self, n: u16) {
@@ -102,6 +108,20 @@ impl Registers {
 		let reg2 = self.window_start + usize::from(reg);
 		self.registers.get_mut(reg2).expect("Invalid register")
 	}
+	
+	pub fn get_upvalue(&self, upv: GCRef<Upvalue>) -> Value {
+		match upv.get() {
+			UpvalueData::OnStack(idx) => self.registers[idx].clone(),
+			UpvalueData::OnHeap(val) => val,
+		}
+	}
+	
+	pub fn set_upvalue(&mut self, upv: GCRef<Upvalue>, val: Value) {
+		match upv.get() {
+			UpvalueData::OnStack(idx) => self.registers[idx] = val,
+			UpvalueData::OnHeap(_) => upv.set_inside(val),
+		}
+	}
 }
 
 
@@ -126,12 +146,11 @@ pub struct VMState<'a> {
 
 impl<'a> VMState<'a> {
 	pub fn new(program: &Program) -> VMState {
-		let main = program.chunks.get(0).expect("Program has no main chunk");
 		let mut vm = VMState {
 			regs: Registers::new(),
 			chunk_id: 0,
-			chunk: main,
-			it: main.code.iter(),
+			chunk: program.chunks.get(0).expect("Program contains no chunks"),
+			it: [].iter(),
 			calls: vec![],
 		};
 		vm.regs.allocate(vm.chunk.nb_registers);
@@ -142,36 +161,49 @@ impl<'a> VMState<'a> {
 		usize::try_from(&self.chunk.code.len() - self.it.len()).unwrap()
 	}
 	
-	pub fn call(&mut self, program: &'a Program, func: &GCRef<Closure>, args_start: u8, ret_reg: u8) {
-		self.calls.push(ExecRecord {
-			chunk_id: self.chunk_id,
-			return_add: self.pos(),
-			return_reg: ret_reg,
-			reg_win_start: self.regs.window_start,
-			reg_win_end: self.regs.registers.len(),
-		});
-		self.regs.shift_window(u16::from(args_start));
+	pub fn call(&mut self, program: &'a Program, func: GCRef<Closure>, args_start: u8, ret_reg: Option<u8>) {
+		let ret_add = self.pos();
 		
 		self.chunk_id = usize::from(func.chunk_id);
 		self.chunk = &program.chunks[self.chunk_id];
-		self.regs.registers.resize(self.regs.window_start + usize::from(self.chunk.nb_registers), NIL);
 		self.it = self.chunk.code.iter();
+		
+		self.regs.shift_window(u16::from(args_start));
+		self.regs.registers.resize(self.regs.window_start + usize::from(self.chunk.nb_registers), NIL);
+		
+		self.calls.push(ExecRecord {
+			closure: func,
+			upvalues: HashMap::new(),
+			return_params: ret_reg.map(|ret_reg| ReturnParams {
+				add: ret_add,
+				reg: ret_reg,
+			}),
+			reg_win: (self.regs.window_start, self.regs.registers.len()),
+		});
 	}
 	
-	pub fn ret(&mut self, program: &'a Program, ret_val: Value) {
-		let rec = self.calls.pop().expect("Cannot return from main chunk");
+	pub fn ret(&mut self, program: &'a Program, heap: &mut GCHeap, ret_val: Value) {
+		let cur_call = self.calls.pop().unwrap();
+		let prev_call = self.calls.last().unwrap();
 		
-		self.regs.reset_window(rec.reg_win_start, rec.reg_win_end);
-		self.chunk_id = rec.chunk_id;
+		for (reg, upv) in cur_call.upvalues { // Close upvalues
+			let val = self.regs.reg_or_cst(self.chunk, heap, reg).clone();
+			upv.set_inside(val);
+		}
+		self.regs.reset_window(prev_call.reg_win.0, prev_call.reg_win.1);
+		
+		self.chunk_id = prev_call.closure.chunk_id as usize;
 		self.chunk = &program.chunks[self.chunk_id];
-		self.it = iter_from(&self.chunk.code, rec.return_add);
-		
-		*self.regs.mut_reg(rec.return_reg) = ret_val;
+		let ret = cur_call.return_params.expect("No return address/register set");
+		self.it = iter_from(&self.chunk.code, ret.add);
+		*self.regs.mut_reg(ret.reg) = ret_val;
 	}
 }
 
 pub fn run_program(heap: &mut GCHeap, program: &Program) {
 	let mut vm = VMState::new(program);
+	let main = heap.make_ref(Closure::new(0, String::from("<main>"), vec![]));
+	vm.call(program, main, 0, None);
 	
 	let mut counter = 0;
 	
@@ -185,7 +217,7 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) {
 	}
 	
 	loop {
-		//println!("({}) {}@{}, {}/{}", vm.calls.len(), vm.chunk_id, vm.pos(), vm.regs.window_start, vm.regs.registers.len());
+		// println!("({}) {}@{}", vm.calls.len(), vm.chunk_id, vm.pos());
 		
 		if let Some(b) = vm.it.next() {
 			match InstrType::try_from(*b).unwrap() {
@@ -232,7 +264,20 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) {
 				InstrType::Func => {
 					let chunk_id = read_u8(&mut vm.it);
 					let rout = read_u8(&mut vm.it);
-					*vm.regs.mut_reg(rout) = heap.make_value(Closure::new(chunk_id));
+					let chunk = program.chunks.get(chunk_id as usize).expect("Invalid chunk id");
+					let cur_call = vm.calls.last_mut().unwrap();
+					let upvalues = chunk.upvalues.iter().map(|upv| {
+						let reg = upv.reg;
+						if let Some(upv) = cur_call.upvalues.get(&reg) {
+							upv.clone()
+						} else {
+							let idx = cur_call.reg_win.0 + (reg as usize);
+							let upv = heap.make_ref(Upvalue::new(idx, upv.name.clone() + "@" + &chunk.name));
+							cur_call.upvalues.insert(reg, upv.clone());
+							upv
+						}
+					}).collect();
+					*vm.regs.mut_reg(rout) = heap.make_value(Closure::new(chunk_id, chunk.name.clone(), upvalues));
 				},
 				InstrType::Call => {
 					let func = vm.regs.reg_or_cst(vm.chunk, heap, read_u8(&mut vm.it));
@@ -240,13 +285,13 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) {
 					let rout = read_u8(&mut vm.it);
 					let func = GCRef::<Closure>::try_from(func.clone()).expect("Cannot call value");
 					
-					vm.call(program, &func, args_start, rout);
+					vm.call(program, func, args_start, Some(rout));
 				},
 				InstrType::Ret => {
 					let rin = read_u8(&mut vm.it);
 					let temp = vm.regs.reg_or_cst(vm.chunk, heap, rin).clone();
 					
-					vm.ret(program, temp);
+					vm.ret(program, heap, temp);
 				}
 				InstrType::Jmp => {
 					let final_add = read_rel_add(&mut vm.it, &vm.chunk.code);
@@ -272,18 +317,31 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) {
 					let v = vm.regs.reg_or_cst(vm.chunk, heap, read_u8(&mut vm.it));
 					println!("{}", v.repr());
 				},
+				InstrType::GetUp => {
+					let upv_idx = read_u8(&mut vm.it);
+					let rout = read_u8(&mut vm.it);
+					let upv = vm.calls.last().unwrap().closure.upvalues[upv_idx as usize].clone();
+					*vm.regs.mut_reg(rout) = vm.regs.get_upvalue(upv);
+				},
+				InstrType::SetUp => {
+					let upv_idx = read_u8(&mut vm.it);
+					let rin = read_u8(&mut vm.it);
+					let upv = vm.calls.last().unwrap().closure.upvalues[upv_idx as usize].clone();
+					vm.regs.set_upvalue(upv, vm.regs.reg_or_cst(vm.chunk, heap, rin).clone());
+				},
 				#[allow(unreachable_patterns)]
 				i => unimplemented!("Unimplemented instruction: {:?}", i)
 			}
 		} else if vm.chunk_id == 0 {
 			break;
 		} else { // implicit return
-			vm.ret(program, NIL);
+			vm.ret(program, heap, NIL);
 		}
 		
 		counter += 1;
 		if counter % 100 == 0 {
 			heap.collect();
+			// heap.inspect();
 		}
 	}
 	

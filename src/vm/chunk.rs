@@ -217,7 +217,7 @@ impl Chunk {
 					s.push_str(&format!("{}, {}", self.format_rel_add(&mut it), self.format_reg(&mut it)));
 				},
 				GetUp | SetUp => {
-					s.push_str(&format!("{}, {}", read_u8(&mut it), self.format_reg(&mut it)));
+					s.push_str(&format!("u{}, {}", read_u8(&mut it), self.format_reg(&mut it)));
 				},
 				#[allow(unreachable_patterns)]
 				_ => unimplemented!("Unimplemented disassembly for instruction: {:?}", instr)
