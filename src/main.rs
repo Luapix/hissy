@@ -3,10 +3,10 @@ use std::fmt::{Display, Debug};
 use std::fs::read_to_string;
 use std::path::Path;
 
-use hissy::parser;
-use hissy::parser::{lexer::{Tokens, read_tokens}, ast::ProgramAST};
-use hissy::compiler::{Program, Compiler};
-use hissy::vm::{gc::GCHeap, run_program};
+use hissy_lib::parser;
+use hissy_lib::parser::{lexer::{Tokens, read_tokens}, ast::ProgramAST};
+use hissy_lib::compiler::{Program, Compiler};
+use hissy_lib::vm::{gc::GCHeap, run_program};
 
 
 fn format_error<T, U: Display>(r: Result<T, U>, msg: &str) -> Result<T, String> {
