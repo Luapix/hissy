@@ -1,5 +1,4 @@
 
-use std::fmt::Write;
 use std::path::Path;
 use std::convert::TryFrom;
 use std::fs;
@@ -51,27 +50,31 @@ impl ChunkConstant {
 }
 
 
-pub(crate) struct ChunkUpvalue {
+#[derive(Default)]
+pub(crate) struct ChunkInfo {
 	pub name: String,
-	pub reg: u8,
+	pub upvalue_names: Vec<String>,
 }
 
 pub(crate) struct Chunk {
-	pub name: String,
 	pub nb_registers: u16,
 	pub constants: Vec<ChunkConstant>,
-	pub upvalues: Vec<ChunkUpvalue>,
+	pub upvalues: Vec<u8>,
 	pub code: Vec<u8>,
+	pub debug_info: ChunkInfo,
 }
 
 
 impl Chunk {
-	pub fn new(name: String) -> Chunk {
-		Chunk { name, nb_registers: 0, constants: vec![], upvalues: vec![], code: vec![] }
+	pub fn new() -> Chunk {
+		Chunk { nb_registers: 0, constants: vec![], upvalues: vec![], code: vec![], debug_info: ChunkInfo::default() }
 	}
 	
-	pub fn from_bytes(it: &mut slice::Iter<u8>) -> Chunk {
-		let mut chunk = Chunk::new(read_small_str(it));
+	pub fn from_bytes(it: &mut slice::Iter<u8>, debug_info: bool) -> Chunk {
+		let mut chunk = Chunk::new();
+		if debug_info {
+			chunk.debug_info.name = read_small_str(it);
+		}
 		
 		chunk.nb_registers = read_u16(it);
 		
@@ -91,8 +94,10 @@ impl Chunk {
 		let nb_upvalues = read_u16(it);
 		for _ in 0..nb_upvalues {
 			let reg = read_u8(it);
-			let name = read_small_str(it);
-			chunk.upvalues.push(ChunkUpvalue { reg, name });
+			if debug_info {
+				chunk.debug_info.upvalue_names.push(read_small_str(it));
+			}
+			chunk.upvalues.push(reg);
 		}
 		
 		let code_size = usize::from(read_u16(it));
@@ -100,8 +105,10 @@ impl Chunk {
 		chunk
 	}
 	
-	pub fn to_bytes(&self, bytes: &mut Vec<u8>) {
-		write_small_str(bytes, &self.name);
+	pub fn to_bytes(&self, bytes: &mut Vec<u8>, debug_info: bool) {
+		if debug_info {
+			write_small_str(bytes, &self.debug_info.name);
+		}
 		
 		write_u16(bytes, self.nb_registers);
 		
@@ -131,9 +138,11 @@ impl Chunk {
 		}
 		
 		write_into_u16(bytes, self.upvalues.len(), "Too many upvalues to serialize");
-		for upv in &self.upvalues {
-			write_u8(bytes, upv.reg);
-			write_small_str(bytes, &upv.name);
+		for (i, upv) in self.upvalues.iter().enumerate() {
+			write_u8(bytes, *upv);
+			if debug_info {
+				write_small_str(bytes, &self.debug_info.upvalue_names[i]);
+			}
 		}
 		
 		write_into_u16(bytes, self.code.len(), "Code too long to serialize");
@@ -171,70 +180,17 @@ impl Chunk {
 		let rel_add = isize::from(i8::from_le_bytes([*it.next().unwrap()]));
 		format!("@{}", pos + rel_add)
 	}
-	
-	pub fn disassemble(&self, s: &mut String) {
-		s.push_str(&format!("{} ({} registers; {} constants)\n",
-			self.name, self.nb_registers, self.constants.len()));
-		
-		if !self.upvalues.is_empty() {
-			let upv_str = self.upvalues.iter().fold(String::new(), |mut s, u| {
-				let ty = if u.reg >= MAX_REGISTERS { "u" } else { "r" };
-				write!(&mut s, "{} ({}{})", u.name, ty, u.reg % MAX_REGISTERS).unwrap();
-				s
-			});
-			s.push_str(&format!("(upvalues: {})\n", upv_str));
-		}
-		
-		let mut it = self.code.iter();
-		let mut pos = 0;
-		while let Some(b) = it.next() {
-			let instr = InstrType::try_from(*b).unwrap();
-			s.push_str(&format!("{}\t{:?}(", pos, instr));
-			match instr {
-				Nop => {},
-				Log => {
-					s.push_str(&self.format_reg(&mut it));
-				},
-				Cpy | Neg | Not => {
-					s.push_str(&format!("{}, {}", self.format_reg(&mut it), self.format_reg(&mut it)));
-				},
-				Add | Sub | Mul | Div | Mod | Pow | Or | And
-					| Eq | Neq | Lth | Leq | Gth | Geq => {
-					s.push_str(&format!("{}, {}, {}", self.format_reg(&mut it), self.format_reg(&mut it), self.format_reg(&mut it)));
-				},
-				Func => {
-					s.push_str(&format!("chunk {}, {}", read_u8(&mut it), self.format_reg(&mut it)));
-				},
-				Call => {
-					s.push_str(&format!("{}, {}, {}", self.format_reg(&mut it), self.format_reg(&mut it), self.format_reg(&mut it)));
-				},
-				Ret => {
-					s.push_str(&self.format_reg(&mut it));
-				},
-				Jmp => {
-					s.push_str(&self.format_rel_add(&mut it));
-				},
-				Jit | Jif => {
-					s.push_str(&format!("{}, {}", self.format_rel_add(&mut it), self.format_reg(&mut it)));
-				},
-				GetUp | SetUp => {
-					s.push_str(&format!("u{}, {}", read_u8(&mut it), self.format_reg(&mut it)));
-				},
-				#[allow(unreachable_patterns)]
-				_ => unimplemented!("Unimplemented disassembly for instruction: {:?}", instr)
-			}
-			s.push_str(")\n");
-			pos = self.code.len() - it.len();
-		}
-		s.push_str(&format!("{}\n\n", pos));
-	}
 }
 
 /// A data structure representing a compiled program (ie. Hissy bytecode).
 /// Can be serialized to and from a file (usually under the extension .hic, for Hissy Instruction Code).
 pub struct Program {
+	pub(crate) debug_info: bool,
 	pub(crate) chunks: Vec<Chunk>,
 }
+
+const MAGIC_BYTES: &[u8; 4] = b"hsyc";
+const FORMAT_VER: u16 = 2;
 
 impl Program {
 	/// Reads a `Program` from a bytecode file.
@@ -242,32 +198,115 @@ impl Program {
 		let contents = fs::read(path).expect("Unable to read chunk");
 		
 		let mut it = contents.iter();
+		
+		let first_bytes: [u8; 4] = read_u8s(&mut it, MAGIC_BYTES.len());
+		assert!(&first_bytes == MAGIC_BYTES, "Invalid .hsyc file");
+		assert!(read_u16(&mut it) == FORMAT_VER, "Unexpected .hsyc file format version");
+		
+		let options = read_u8(&mut it);
+		assert!(options <= 1, "Unexpected options byte in .hsyc file");
+		let debug_info = options == 1;
+		
 		let mut chunks = vec![];
 		while it.len() > 0 {
-			chunks.push(Chunk::from_bytes(&mut it));
+			chunks.push(Chunk::from_bytes(&mut it, debug_info));
 		}
 		
-		Program { chunks }
+		Program { debug_info, chunks }
 	}
 	
 	/// Serializes a `Program` object to a bytecode file.
 	pub fn to_file<T: AsRef<Path>>(&self, path: T) -> std::io::Result<()> {
 		let mut bytes = vec![];
+		
+		bytes.extend(MAGIC_BYTES);
+		write_u16(&mut bytes, FORMAT_VER);
+		
+		let options = if self.debug_info { 1 } else { 0 };
+		bytes.push(options);
+		
 		for chunk in &self.chunks {
-			chunk.to_bytes(&mut bytes);
+			chunk.to_bytes(&mut bytes, self.debug_info);
 		}
 		fs::write(path, &bytes)
 	}
 	
-	/// Returns a string representation of the bytecode.
-	/// Corresponds to the CLI's "list" output.
-	pub fn disassemble(&self) -> String {
-		let mut s = String::new();
-		
-		for (i, chunk) in self.chunks.iter().enumerate() {
-			s.push_str(&format!("Chunk {}:\n", i));
-			chunk.disassemble(&mut s);
+	fn format_chunk_name(&self, chunk_id: usize) -> String {
+		if self.debug_info {
+			self.chunks[chunk_id].debug_info.name.clone()
+		} else {
+			format!("chunk{}", chunk_id)
 		}
-		s
+	}
+	
+	/// Inspects the `Program`, printing to standard output.
+	/// Corresponds to the CLI's "list" output.
+	pub fn disassemble(&self) {
+		if !self.debug_info {
+			println!("[no debug info]");
+		}
+		
+		for (chunk_id, chunk) in self.chunks.iter().enumerate() {
+			println!("{} ({} registers; {} constants)", self.format_chunk_name(chunk_id),
+				chunk.nb_registers, chunk.constants.len());
+			
+			if !chunk.upvalues.is_empty() {
+				print!("(upvalues: ");
+				for (i,u) in chunk.upvalues.iter().enumerate() {
+					let ty = if *u >= MAX_REGISTERS { "u" } else { "r" };
+					if self.debug_info {
+						print!("{} (", chunk.debug_info.upvalue_names[i]);
+					}
+					print!("{}{}", ty, u % MAX_REGISTERS);
+					if self.debug_info {
+						print!(")");
+					}
+				}
+				println!(")");
+			}
+			
+			let mut it = chunk.code.iter();
+			let mut pos = 0;
+			while let Some(b) = it.next() {
+				let instr = InstrType::try_from(*b).unwrap();
+				print!("{}\t{:?}(", pos, instr);
+				match instr {
+					Nop => {},
+					Log => {
+						print!("{}", chunk.format_reg(&mut it));
+					},
+					Cpy | Neg | Not => {
+						print!("{}, {}", chunk.format_reg(&mut it), chunk.format_reg(&mut it));
+					},
+					Add | Sub | Mul | Div | Mod | Pow | Or | And
+						| Eq | Neq | Lth | Leq | Gth | Geq => {
+						print!("{}, {}, {}", chunk.format_reg(&mut it), chunk.format_reg(&mut it), chunk.format_reg(&mut it));
+					},
+					Func => {
+						print!("{}, {}", self.format_chunk_name(read_u8(&mut it) as usize), chunk.format_reg(&mut it));
+					},
+					Call => {
+						print!("{}, {}, {}", chunk.format_reg(&mut it), chunk.format_reg(&mut it), chunk.format_reg(&mut it));
+					},
+					Ret => {
+						print!("{}", chunk.format_reg(&mut it));
+					},
+					Jmp => {
+						print!("{}", chunk.format_rel_add(&mut it));
+					},
+					Jit | Jif => {
+						print!("{}, {}", chunk.format_rel_add(&mut it), chunk.format_reg(&mut it));
+					},
+					GetUp | SetUp => {
+						print!("u{}, {}", read_u8(&mut it), chunk.format_reg(&mut it));
+					},
+					#[allow(unreachable_patterns)]
+					_ => unimplemented!("Unimplemented disassembly for instruction: {:?}", instr)
+				}
+				println!(")");
+				pos = chunk.code.len() - it.len();
+			}
+			println!("{}\n", pos);
+		}
 	}
 }

@@ -45,11 +45,11 @@ pub(super) enum UpvalueData {
 	OnHeap(Value),
 }
 
-pub(super) struct Upvalue(RefCell<UpvalueData>, String);
+pub(super) struct Upvalue(RefCell<UpvalueData>);
 
 impl Upvalue {
-	pub fn new(stack_idx: usize, name: String) -> Upvalue {
-		Upvalue(RefCell::new(UpvalueData::OnStack(stack_idx)), name)
+	pub fn new(stack_idx: usize) -> Upvalue {
+		Upvalue(RefCell::new(UpvalueData::OnStack(stack_idx)))
 	}
 	
 	pub fn get(&self) -> UpvalueData {
@@ -77,20 +77,19 @@ impl fmt::Debug for Upvalue {
 			UpvalueData::OnStack(_) => "open",
 			UpvalueData::OnHeap(_) => "closed",
 		};
-		write!(f, "<{} upvalue {}>", ty, self.1)
+		write!(f, "<{} upvalue>", ty)
 	}
 }
 
 
 pub(super) struct Closure {
 	pub chunk_id: u8,
-	pub chunk_name: String,
 	pub upvalues: Vec<GCRef<Upvalue>>,
 }
 
 impl Closure {
-	pub fn new(chunk_id: u8, chunk_name: String, upvalues: Vec<GCRef<Upvalue>>) -> Closure {
-		Closure { chunk_id, chunk_name, upvalues }
+	pub fn new(chunk_id: u8, upvalues: Vec<GCRef<Upvalue>>) -> Closure {
+		Closure { chunk_id, upvalues }
 	}
 }
 
@@ -101,7 +100,7 @@ impl Traceable for Closure {
 
 impl fmt::Debug for Closure {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "<closure {}>", self.chunk_name)
+		write!(f, "<closure>")
 	}
 }
 

@@ -14,11 +14,11 @@ fn format_error<T, U: Display>(r: Result<T, U>, msg: &str) -> Result<T, String> 
 }
 
 fn display_result<T: Display>(r: Result<T, String>) {
-	println!("{}", r.map_or_else(|m| format!("❎  {}", m), |m| format!("☑  Result: {}", m)));
+	println!("{}", r.map_or_else(|m| format!("❎  {}", m), |m| format!("☑  Success: {}", m)));
 }
 
 fn debug_result<T: Debug>(r: Result<T, String>) {
-	println!("{}", r.map_or_else(|m| format!("❎  {}", m), |m| format!("☑  Result: {:#?}", m)));
+	println!("{}", r.map_or_else(|m| format!("❎  {}", m), |m| format!("☑  Success: {:#?}", m)));
 }
 
 fn display_error(r: Result<(), String>) {
@@ -38,21 +38,24 @@ fn parse(file: &str) -> Result<ProgramAST, String> {
 	format_error(parser::parse(&contents), "Parse error")
 }
 
-fn compile(file: &str) -> Result<(), String> {
+fn compile(file: &str, debug_info: bool) -> Result<String, String> {
 	let code = format_error(read_to_string(file), "Unable to open file")?;
-	let compiler = Compiler::new();
+	let compiler = Compiler::new(debug_info);
+	
 	let program = format_error(compiler.compile_program(&code), "Compile error")?;
-	format_error(program.to_file(Path::new(file).with_extension("hic")), "Compile error")
+	let output = Path::new(file).with_extension("hsyc");
+	let res = program.to_file(output.clone());
+	format_error(res.map(|()| format!("Compiled into {:?}", output)), "Compile error")
 }
 
 fn list(file: &str) {
 	let program = Program::from_file(file);
-	println!("{}", program.disassemble());
+	program.disassemble();
 }
 
 fn interpret(file: &str) -> Result<(), String> {
 	let code = format_error(read_to_string(file), "Unable to open file")?;
-	let compiler = Compiler::new();
+	let compiler = Compiler::new(true); // Always output debug info when interpreting
 	let program = format_error(compiler.compile_program(&code), "Compile error")?;
 	
 	let mut heap = GCHeap::new();
@@ -80,7 +83,7 @@ fn main() {
 		match args[1].as_str() {
 			"lex" => return display_result(lex(&args[2])),
 			"parse" => return debug_result(parse(&args[2])),
-			"compile" => return display_error(compile(&args[2])),
+			"compile" => return display_result(compile(&args[2], true)),
 			"list" => return list(&args[2]),
 			"interpret" => return display_error(interpret(&args[2])),
 			"run" => return display_error(run(&args[2])),

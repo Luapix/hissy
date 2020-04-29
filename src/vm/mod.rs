@@ -234,7 +234,7 @@ impl<'a> VMState<'a> {
 /// Runs a compiled Hissy program, using an existing GC heap.
 pub fn run_program(heap: &mut GCHeap, program: &Program) {
 	let mut vm = VMState::new(program);
-	let main = heap.make_ref(Closure::new(0, String::from("<main>"), vec![]));
+	let main = heap.make_ref(Closure::new(0, vec![]));
 	vm.call(program, main, 0, None);
 	
 	let mut counter = 0;
@@ -298,18 +298,17 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) {
 					let rout = read_u8(&mut vm.it);
 					let chunk = program.chunks.get(chunk_id as usize).expect("Invalid chunk id");
 					let cur_call = vm.calls.last_mut().unwrap();
-					let upvalues = chunk.upvalues.iter().map(|upv| {
-						let reg = upv.reg;
+					let upvalues = chunk.upvalues.iter().map(|reg| {
 						if let Some(upv) = cur_call.upvalues.get(&reg) {
 							upv.clone()
 						} else {
-							let idx = cur_call.reg_win.0 + (reg as usize);
-							let upv = heap.make_ref(Upvalue::new(idx, upv.name.clone() + "@" + &chunk.name));
-							cur_call.upvalues.insert(reg, upv.clone());
+							let idx = cur_call.reg_win.0 + (*reg as usize);
+							let upv = heap.make_ref(Upvalue::new(idx));
+							cur_call.upvalues.insert(*reg, upv.clone());
 							upv
 						}
 					}).collect();
-					*vm.regs.mut_reg(rout) = heap.make_value(Closure::new(chunk_id, chunk.name.clone(), upvalues));
+					*vm.regs.mut_reg(rout) = heap.make_value(Closure::new(chunk_id, upvalues));
 				},
 				InstrType::Call => {
 					let func = vm.regs.reg_or_cst(vm.chunk, heap, read_u8(&mut vm.it));
