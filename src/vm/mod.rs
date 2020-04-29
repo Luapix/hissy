@@ -41,6 +41,7 @@ use std::ops::Deref;
 use std::convert::TryFrom;
 use std::{slice, iter};
 
+use crate::HissyError;
 use crate::serial::*;
 use crate::compiler::chunk::{Chunk, Program};
 
@@ -50,6 +51,11 @@ use object::{Upvalue, UpvalueData, Closure};
 
 
 pub(crate) const MAX_REGISTERS: u8 = 128;
+
+
+fn error_str(s: &str) -> HissyError {
+	HissyError::Execution(String::from(s))
+}
 
 #[derive(Debug, TryFromPrimitive)]
 #[repr(u8)]
@@ -156,10 +162,10 @@ impl Registers {
 }
 
 
-fn read_rel_add<'a>(it: &mut slice::Iter<'a, u8>, code: &'a [u8]) -> usize {
+fn read_rel_add<'a>(it: &mut slice::Iter<'a, u8>, code: &'a [u8]) -> Result<usize, HissyError> {
 	let pos = isize::try_from(code.len() - it.len()).unwrap();
-	let rel_add = isize::from(read_i8(it));
-	usize::try_from(pos + rel_add).expect("Jumped back too far")
+	let rel_add = isize::from(read_i8(it)?);
+	usize::try_from(pos + rel_add).map_err(|_| error_str("Jumped back too far"))
 }
 
 fn iter_from(code: &[u8], pos: usize) -> slice::Iter<u8> {
@@ -232,7 +238,7 @@ impl<'a> VMState<'a> {
 }
 
 /// Runs a compiled Hissy program, using an existing GC heap.
-pub fn run_program(heap: &mut GCHeap, program: &Program) {
+pub fn run_program(heap: &mut GCHeap, program: &Program) -> Result<(), HissyError> {
 	let mut vm = VMState::new(program);
 	let main = heap.make_ref(Closure::new(0, vec![]));
 	vm.call(program, main, 0, None);
@@ -241,10 +247,10 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) {
 	
 	macro_rules! bin_op {
 		($method:ident) => {{
-			let (a, b, c) = (read_u8(&mut vm.it), read_u8(&mut vm.it), read_u8(&mut vm.it));
+			let (a, b, c) = (read_u8(&mut vm.it)?, read_u8(&mut vm.it)?, read_u8(&mut vm.it)?);
 			let a = vm.regs.reg_or_cst(vm.chunk, heap, a);
 			let b = vm.regs.reg_or_cst(vm.chunk, heap, b);
-			*vm.regs.mut_reg(c) = a.$method(&b).expect(concat!("Cannot '", stringify!($method), "' these values"));
+			*vm.regs.mut_reg(c) = a.$method(&b).ok_or_else(|| error_str(concat!("Cannot '", stringify!($method), "' these values")))?;
 		}};
 	}
 	
@@ -255,12 +261,12 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) {
 			match InstrType::try_from(*b).unwrap() {
 				InstrType::Nop => (),
 				InstrType::Cpy => {
-					let (rin, rout) = (read_u8(&mut vm.it), read_u8(&mut vm.it));
+					let (rin, rout) = (read_u8(&mut vm.it)?, read_u8(&mut vm.it)?);
 					let rin = vm.regs.reg_or_cst(vm.chunk, heap, rin);
 					*vm.regs.mut_reg(rout) = rin.clone();
 				},
 				InstrType::Neg => {
-					let (rin, rout) = (read_u8(&mut vm.it), read_u8(&mut vm.it));
+					let (rin, rout) = (read_u8(&mut vm.it)?, read_u8(&mut vm.it)?);
 					let rin = vm.regs.reg_or_cst(vm.chunk, heap, rin);
 					*vm.regs.mut_reg(rout) = rin.neg().expect("Cannot negate value");
 				},
@@ -271,20 +277,20 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) {
 				InstrType::Pow => bin_op!(pow),
 				InstrType::Mod => bin_op!(modulo),
 				InstrType::Not => {
-					let (rin, rout) = (read_u8(&mut vm.it), read_u8(&mut vm.it));
+					let (rin, rout) = (read_u8(&mut vm.it)?, read_u8(&mut vm.it)?);
 					let rin = vm.regs.reg_or_cst(vm.chunk, heap, rin);
 					*vm.regs.mut_reg(rout) = rin.not().expect("Cannot apply logical NOT to value");
 				},
 				InstrType::Or => bin_op!(or),
 				InstrType::And => bin_op!(and),
 				InstrType::Eq => {
-					let (a, b, c) = (read_u8(&mut vm.it), read_u8(&mut vm.it), read_u8(&mut vm.it));
+					let (a, b, c) = (read_u8(&mut vm.it)?, read_u8(&mut vm.it)?, read_u8(&mut vm.it)?);
 					let a = vm.regs.reg_or_cst(vm.chunk, heap, a);
 					let b = vm.regs.reg_or_cst(vm.chunk, heap, b);
 					*vm.regs.mut_reg(c) = Value::from(a.eq(&b));
 				},
 				InstrType::Neq => {
-					let (a, b, c) = (read_u8(&mut vm.it), read_u8(&mut vm.it), read_u8(&mut vm.it));
+					let (a, b, c) = (read_u8(&mut vm.it)?, read_u8(&mut vm.it)?, read_u8(&mut vm.it)?);
 					let a = vm.regs.reg_or_cst(vm.chunk, heap, a);
 					let b = vm.regs.reg_or_cst(vm.chunk, heap, b);
 					*vm.regs.mut_reg(c) = Value::from(!a.eq(&b));
@@ -294,8 +300,8 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) {
 				InstrType::Gth => bin_op!(gth),
 				InstrType::Geq => bin_op!(geq),
 				InstrType::Func => {
-					let chunk_id = read_u8(&mut vm.it);
-					let rout = read_u8(&mut vm.it);
+					let chunk_id = read_u8(&mut vm.it)?;
+					let rout = read_u8(&mut vm.it)?;
 					let chunk = program.chunks.get(chunk_id as usize).expect("Invalid chunk id");
 					let cur_call = vm.calls.last_mut().unwrap();
 					let upvalues = chunk.upvalues.iter().map(|reg| {
@@ -311,52 +317,52 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) {
 					*vm.regs.mut_reg(rout) = heap.make_value(Closure::new(chunk_id, upvalues));
 				},
 				InstrType::Call => {
-					let func = vm.regs.reg_or_cst(vm.chunk, heap, read_u8(&mut vm.it));
-					let args_start = read_u8(&mut vm.it);
-					let rout = read_u8(&mut vm.it);
+					let func = vm.regs.reg_or_cst(vm.chunk, heap, read_u8(&mut vm.it)?);
+					let args_start = read_u8(&mut vm.it)?;
+					let rout = read_u8(&mut vm.it)?;
 					let func = GCRef::<Closure>::try_from(func.clone()).expect("Cannot call value");
 					
 					vm.call(program, func, args_start, Some(rout));
 				},
 				InstrType::Ret => {
-					let rin = read_u8(&mut vm.it);
+					let rin = read_u8(&mut vm.it)?;
 					let temp = vm.regs.reg_or_cst(vm.chunk, heap, rin).clone();
 					
 					vm.ret(program, heap, temp);
 				}
 				InstrType::Jmp => {
-					let final_add = read_rel_add(&mut vm.it, &vm.chunk.code);
+					let final_add = read_rel_add(&mut vm.it, &vm.chunk.code)?;
 					vm.it = iter_from(&vm.chunk.code, final_add);
 				},
 				InstrType::Jit => {
-					let final_add = read_rel_add(&mut vm.it, &vm.chunk.code);
-					let cond_val = vm.regs.reg_or_cst(vm.chunk, heap, read_u8(&mut vm.it));
+					let final_add = read_rel_add(&mut vm.it, &vm.chunk.code)?;
+					let cond_val = vm.regs.reg_or_cst(vm.chunk, heap, read_u8(&mut vm.it)?);
 					let cond = bool::try_from(cond_val.deref()).expect("Non-bool used in condition");
 					if cond {
 						vm.it = iter_from(&vm.chunk.code, final_add);
 					}
 				},
 				InstrType::Jif => {
-					let final_add = read_rel_add(&mut vm.it, &vm.chunk.code);
-					let cond_val = vm.regs.reg_or_cst(vm.chunk, heap, read_u8(&mut vm.it));
+					let final_add = read_rel_add(&mut vm.it, &vm.chunk.code)?;
+					let cond_val = vm.regs.reg_or_cst(vm.chunk, heap, read_u8(&mut vm.it)?);
 					let cond = bool::try_from(cond_val.deref()).expect("Non-bool used in condition");
 					if !cond {
 						vm.it = iter_from(&vm.chunk.code, final_add);
 					}
 				},
 				InstrType::Log => {
-					let v = vm.regs.reg_or_cst(vm.chunk, heap, read_u8(&mut vm.it));
+					let v = vm.regs.reg_or_cst(vm.chunk, heap, read_u8(&mut vm.it)?);
 					println!("{}", v.repr());
 				},
 				InstrType::GetUp => {
-					let upv_idx = read_u8(&mut vm.it);
-					let rout = read_u8(&mut vm.it);
+					let upv_idx = read_u8(&mut vm.it)?;
+					let rout = read_u8(&mut vm.it)?;
 					let upv = vm.calls.last().unwrap().closure.upvalues[upv_idx as usize].clone();
 					*vm.regs.mut_reg(rout) = vm.regs.get_upvalue(upv);
 				},
 				InstrType::SetUp => {
-					let upv_idx = read_u8(&mut vm.it);
-					let rin = read_u8(&mut vm.it);
+					let upv_idx = read_u8(&mut vm.it)?;
+					let rin = read_u8(&mut vm.it)?;
 					let upv = vm.calls.last().unwrap().closure.upvalues[upv_idx as usize].clone();
 					vm.regs.set_upvalue(upv, vm.regs.reg_or_cst(vm.chunk, heap, rin).clone());
 				},
@@ -378,4 +384,6 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) {
 	
 	vm.regs.free(vm.chunk.nb_registers);
 	heap.collect();
+	
+	Ok(())
 }

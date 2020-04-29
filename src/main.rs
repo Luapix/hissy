@@ -6,77 +6,82 @@ use std::path::{Path, PathBuf};
 
 use docopt::Docopt;
 
+use hissy_lib::HissyError;
 use hissy_lib::parser;
 use hissy_lib::parser::{lexer::{Tokens, read_tokens}, ast::ProgramAST};
 use hissy_lib::compiler::{Program, Compiler};
 use hissy_lib::vm::{gc::GCHeap, run_program};
 
 
-fn format_error<T, U: Display>(r: Result<T, U>, msg: &str) -> Result<T, String> {
-	r.map_err(|e| format!("{}: {}", msg, e))
+fn error(s: String) -> HissyError {
+	HissyError::IO(s)
+}
+fn error_str(s: &str) -> HissyError {
+	HissyError::IO(String::from(s))
 }
 
-fn display_result<T: Display>(r: Result<T, String>) {
-	println!("{}", r.map_or_else(|m| format!("❎  {}", m), |m| format!("☑  Success: {}", m)));
+fn display_result<T: Display>(r: Result<T, HissyError>) {
+	match r {
+		Ok(r) => println!("☑  Success: {}", r),
+		Err(e) => eprintln!("{}", e),
+	}
 }
 
-fn debug_result<T: Debug>(r: Result<T, String>) {
-	println!("{}", r.map_or_else(|m| format!("❎  {}", m), |m| format!("☑  Success: {:#?}", m)));
+fn debug_result<T: Debug>(r: Result<T, HissyError>) {
+	match r {
+		Ok(r) => println!("☑  Success: {:#?}", r),
+		Err(e) => eprintln!("{}", e),
+	}
 }
 
-fn display_error(r: Result<(), String>) {
+fn display_error(r: Result<(), HissyError>) {
 	if let Err(e) = r {
-		println!("❎  {}", e);
+		eprintln!("{}", e);
 	}
 }
 
 
-fn lex(file: &str) -> Result<Tokens, String> {
-	let contents = format_error(read_to_string(file), "Unable to open file")?;
-	format_error(read_tokens(&contents), "Lexer error")
+fn lex(file: &str) -> Result<Tokens, HissyError> {
+	let contents = read_to_string(file).map_err(|_| error_str("Unable to open file"))?;
+	read_tokens(&contents)
 }
 
-fn parse(file: &str) -> Result<ProgramAST, String> {
-	let contents = format_error(read_to_string(file), "Unable to open file")?;
-	format_error(parser::parse(&contents), "Parse error")
+fn parse(file: &str) -> Result<ProgramAST, HissyError> {
+	let contents = read_to_string(file).map_err(|_| error_str("Unable to open file"))?;
+	parser::parse(&contents)
 }
 
-fn compile(input: &str, output: Option<String>, debug_info: bool) -> Result<String, String> {
-	let code = format_error(read_to_string(input), "Unable to open file")?;
+fn compile(input: &str, output: Option<String>, debug_info: bool) -> Result<String, HissyError> {
+	let code = read_to_string(input).map_err(|_| error_str("Unable to open file"))?;
 	let compiler = Compiler::new(debug_info);
 	
-	let program = format_error(compiler.compile_program(&code), "Compile error")?;
-	let output = output.map_or_else(|| Path::new(input).with_extension("hsyc"), |o| PathBuf::from(o));
-	let res = program.to_file(output.clone());
-	format_error(res.map(|()| format!("Compiled into {:?}", output)), "Compile error")
+	let program = compiler.compile_program(&code)?;
+	let output = output.map_or_else(|| Path::new(input).with_extension("hsyc"), PathBuf::from);
+	program.to_file(output.clone())
+		.map(|_| format!("Compiled into {:?}", output))
+		.map_err(|e| error(format!("Unable to write file: {}", e)))
 }
 
-fn list(file: &str) {
-	let program = Program::from_file(file);
-	program.disassemble();
+fn list(file: &str) -> Result<(), HissyError> {
+	let program = Program::from_file(file)?;
+	program.disassemble()
 }
 
-fn interpret(file: &str) -> Result<(), String> {
-	let code = format_error(read_to_string(file), "Unable to open file")?;
+fn interpret(file: &str) -> Result<(), HissyError> {
+	let code = read_to_string(file).map_err(|_| error_str("Unable to open file"))?;
 	let compiler = Compiler::new(true); // Always output debug info when interpreting
-	let program = format_error(compiler.compile_program(&code), "Compile error")?;
+	let program = compiler.compile_program(&code)?;
 	
 	let mut heap = GCHeap::new();
-	{
-		run_program(&mut heap, &program);
-	}
-	heap.collect();
+	run_program(&mut heap, &program)?;
 	Ok(())
 }
 
-fn run(file: &str) -> Result<(), String> {
-	let program = Program::from_file(file);
+fn run(file: &str) -> Result<(), HissyError> {
+	let program = Program::from_file(file)?;
 	
 	let mut heap = GCHeap::new();
-	{
-		run_program(&mut heap, &program);
-	}
-	heap.collect();
+	run_program(&mut heap, &program)?;
 	Ok(())
 }
 
@@ -122,7 +127,7 @@ fn main() {
 	} else if args.get_bool("compile") {
 		display_result(compile(args.get_str("<code>"), get_arg_option(&args, "<bytecode>"), !args.get_bool("--strip")));
 	} else if args.get_bool("list") {
-		list(args.get_str("<bytecode>"));
+		display_error(list(args.get_str("<bytecode>")));
 	} else if args.get_bool("interpret") {
 		display_error(interpret(args.get_str("<code>")));
 	} else if args.get_bool("run") {

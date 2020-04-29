@@ -49,7 +49,7 @@ impl Value {
 	
 	pub(super) fn from_pointer(pointer: *mut GCWrapper, root: bool) -> Value {
 		let pointer = pointer as *mut () as u64; // Erases fat pointer data
-		debug_assert!(pointer & DATA_MASK == pointer, "Object pointer has too many bits to fit in Value");
+		assert!(pointer & DATA_MASK == pointer, "Object pointer has too many bits to fit in Value");
 		let new_val = Value(base_value(if root { ValueType::Root } else { ValueType::Ref }) + pointer);
 		if root { new_val.get_pointer().unwrap().signal_root() }
 		new_val
@@ -174,7 +174,7 @@ impl From<i32> for Value {
 /// Converts an `f64` into a `Value` directly (no heap allocation is performed).
 impl From<f64> for Value {
 	fn from(d: f64) -> Self {
-		debug_assert!(f64::to_bits(d) <= TAG_MIN, "Trying to fit 'fat' NaN into Value");
+		assert!(f64::to_bits(d) <= TAG_MIN, "Trying to fit 'fat' NaN into Value");
 		Value(f64::to_bits(d))
 	}
 }
@@ -191,7 +191,7 @@ impl TryFrom<&Value> for i32 {
 	type Error = &'static str;
 	fn try_from(value: &Value) -> std::result::Result<Self, &'static str> {
 		if value.get_type() == ValueType::Int {
-			debug_assert!(value.0 & DATA_MASK <= std::u32::MAX as u64, "Invalid integer Value");
+			assert!(value.0 & DATA_MASK <= std::u32::MAX as u64, "Invalid integer Value");
 			Ok((value.0 & DATA_MASK) as i32)
 		} else {
 			Err("Value is not an integer")
@@ -216,7 +216,7 @@ impl TryFrom<&Value> for bool {
 	type Error = &'static str;
 	fn try_from(value: &Value) -> std::result::Result<Self, &'static str> {
 		if value.get_type() == ValueType::Bool {
-			debug_assert!(value.0 & DATA_MASK <= 1, "Invalid boolean Value");
+			assert!(value.0 & DATA_MASK <= 1, "Invalid boolean Value");
 			Ok(value.0 & 1 == 1)
 		} else {
 			Err("Value is not a boolean")

@@ -7,25 +7,38 @@ use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::convert::TryFrom;
 
+use crate::HissyError;
 use crate::parser::{parse, ast::{Expr, Stat, Cond, BinOp, UnaOp}};
 use crate::vm::{MAX_REGISTERS, InstrType};
 use chunk::{Chunk, ChunkConstant};
 
 
-fn emit_jump_to(chunk: &mut Chunk, add: usize) {
+
+fn error(s: String) -> HissyError {
+	HissyError::Compilation(s)
+}
+
+fn error_str(s: &str) -> HissyError {
+	HissyError::Compilation(String::from(s))
+}
+
+
+fn emit_jump_to(chunk: &mut Chunk, add: usize) -> Result<(), HissyError> {
 	let from = chunk.code.len();
 	let to = add;
 	let rel_jmp = to as isize - from as isize;
-	let rel_jmp = i8::try_from(rel_jmp).expect("Jump too large");
+	let rel_jmp = i8::try_from(rel_jmp).map_err(|_| error_str("Jump too large"))?;
 	chunk.emit_byte(rel_jmp as u8);
+	Ok(())
 }
 
-fn fill_in_jump_from(chunk: &mut Chunk, add: usize) {
+fn fill_in_jump_from(chunk: &mut Chunk, add: usize) -> Result<(), HissyError> {
 	let from = add;
 	let to = chunk.code.len();
 	let rel_jmp = to as isize - from as isize;
-	let rel_jmp = i8::try_from(rel_jmp).expect("Jump too large");
+	let rel_jmp = i8::try_from(rel_jmp).map_err(|_| error_str("Jump too large"))?;
 	chunk.code[add] = rel_jmp as u8;
+	Ok(())
 }
 
 struct ChunkRegisters {
@@ -43,35 +56,35 @@ impl ChunkRegisters {
 		}
 	}
 	
-	pub fn new_reg(&mut self) -> u8 {
+	pub fn new_reg(&mut self) -> Result<u8, HissyError> {
 		let new_reg = u8::try_from(self.used).ok().filter(|r| *r < MAX_REGISTERS)
-			.expect("Cannot compile: Too many registers required");
+			.ok_or_else(|| error_str("Cannot compile: Too many registers required"))?;
 		self.used += 1;
 		if self.used > self.required {
 			self.required = self.used
 		}
-		new_reg
+		Ok(new_reg)
 	}
 	
-	pub fn new_reg_range(&mut self, n: u16) -> u8 {
+	pub fn new_reg_range(&mut self, n: u16) -> Result<u8, HissyError> {
 		u8::try_from(self.used + n - 1).ok().filter(|r| *r < MAX_REGISTERS)
-			.expect("Cannot compile: Too many registers required");
+			.ok_or_else(|| error_str("Cannot compile: Too many registers required"))?;
 		let range_start = u8::try_from(self.used).unwrap();
 		self.used += n;
 		if self.used > self.required {
 			self.required = self.used
 		}
-		range_start
+		Ok(range_start)
 	}
 	
 	pub fn make_local(&mut self, i: u8) {
-		debug_assert!(u16::from(i) == self.local_cnt, "Local allocated above temporaries");
+		assert!(u16::from(i) == self.local_cnt, "Local allocated above temporaries");
 		self.local_cnt += 1;
 	}
 	
 	// Marks register as freed
 	pub fn free_reg(&mut self, i: u8) {
-		debug_assert!(u16::from(i) == self.used - 1, "Registers are not freed in FIFO order: {}, {}", i, self.used);
+		assert!(u16::from(i) == self.used - 1, "Registers are not freed in FIFO order: {}, {}", i, self.used);
 		self.used -= 1;
 		if self.local_cnt > self.used {
 			self.local_cnt = self.used;
@@ -79,7 +92,7 @@ impl ChunkRegisters {
 	}
 	
 	pub fn free_reg_range(&mut self, start: u8, n: u16) {
-		debug_assert!(u16::from(start) + n == self.used, "Registers are not freed in FIFO order");
+		assert!(u16::from(start) + n == self.used, "Registers are not freed in FIFO order");
 		self.used -= n;
 		if self.local_cnt > self.used {
 			self.local_cnt = self.used;
@@ -175,8 +188,8 @@ impl ChunkContext {
 		self.regs.make_local(reg);
 	}
 	
-	fn make_upvalue(&mut self, id: String, reg: u8) -> u8 {
-		let upv = u8::try_from(self.upvalues.len()).expect("Too many upvalues in chunk");
+	fn make_upvalue(&mut self, id: String, reg: u8) -> Result<u8, HissyError> {
+		let upv = u8::try_from(self.upvalues.len()).map_err(|_| error_str("Too many upvalues in chunk"));
 		self.upvalues.push(UpvalueBinding { name: id, reg });
 		upv
 	}
@@ -268,62 +281,67 @@ impl Compiler {
 		Compiler { debug_info, ctx: Context::new(), chunk: ChunkManager::new() }
 	}
 	
-	fn get_binding(&mut self, id: &str) -> Option<Binding> {
+	fn get_binding(&mut self, id: &str) -> Result<Option<Binding>, HissyError> {
 		// Find a binding (local or known upvalue) in current chunk, otherwise...
-		self.ctx.find_chunk_binding(id).or_else(|| {
+		if let Some(binding) = self.ctx.find_chunk_binding(id) {
+			Ok(Some(binding))
+		} else {
 			// Look for a binding in surrounding chunks, and if found...
-			self.ctx.stack.iter().enumerate().rev().skip(1).find_map(|(i, ctx)| {
+			let binding = self.ctx.stack.iter().enumerate().rev().skip(1).find_map(|(i, ctx)| {
 				ctx.find_chunk_binding(id).map(|b| (i, b))
-			}).map(|(i, mut binding)| {
+			});
+			if let Some((i, mut binding)) = binding {
 				// Set it as an upvalue in all inner chunks successively.
 				for ctx in self.ctx.stack[i+1..].iter_mut() {
-					let upv = ctx.make_upvalue(id.to_string(), binding.encoded());
+					let upv = ctx.make_upvalue(id.to_string(), binding.encoded())?;
 					binding = Binding::Upvalue(upv);
 				}
-				binding
-			})
-		})
+				Ok(Some(binding))
+			} else {
+				Ok(None)
+			}
+		}
 	}
 	
 	// Emits register to chunk; dest if Some, else new_reg()
-	fn emit_reg(&mut self, dest: Option<u8>) -> u8 {
-		let reg = dest.map_or_else(|| self.ctx.regs.new_reg(), |r| r);
+	fn emit_reg(&mut self, dest: Option<u8>) -> Result<u8, HissyError> {
+		let reg = dest.map_or_else(|| self.ctx.regs.new_reg(), Ok)?;
 		self.chunk.emit_byte(reg);
-		reg
+		Ok(reg)
 	}
 	
 	// Compile computation of expr (into dest if given), and returns final register
 	// Warning: If no dest is given, do not assume the final register is a new, temporary one,
 	// it may be a local or a constant!
-	fn compile_expr(&mut self, expr: Expr, dest: Option<u8>, name: Option<String>) -> u8 {
+	fn compile_expr(&mut self, expr: Expr, dest: Option<u8>, name: Option<String>) -> Result<u8, HissyError> {
 		let mut needs_copy = true;
 		
 		let mut reg = match expr {
 			Expr::Nil =>
-				self.chunk.compile_constant(ChunkConstant::Nil),
+				self.chunk.compile_constant(ChunkConstant::Nil)?,
 			Expr::Bool(b) =>
-				self.chunk.compile_constant(ChunkConstant::Bool(b)),
+				self.chunk.compile_constant(ChunkConstant::Bool(b))?,
 			Expr::Int(i) =>
-				self.chunk.compile_constant(ChunkConstant::Int(i)),
+				self.chunk.compile_constant(ChunkConstant::Int(i))?,
 			Expr::Real(r) =>
-				self.chunk.compile_constant(ChunkConstant::Real(r)),
+				self.chunk.compile_constant(ChunkConstant::Real(r))?,
 			Expr::String(s) => 
-				self.chunk.compile_constant(ChunkConstant::String(s)),
+				self.chunk.compile_constant(ChunkConstant::String(s))?,
 			Expr::Id(s) => {
-				let binding = self.get_binding(&s).expect("Referencing undefined binding");
+				let binding = self.get_binding(&s)?.ok_or_else(|| error_str("Referencing undefined binding"))?;
 				match binding {
 					Binding::Local(reg) => reg,
 					Binding::Upvalue(upv) => {
 						self.chunk.emit_instr(InstrType::GetUp);
 						self.chunk.emit_byte(upv);
 						needs_copy = false;
-						self.emit_reg(dest)
+						self.emit_reg(dest)?
 					},
 				}
 			},
 			Expr::BinOp(op, e1, e2) => {
-				let r1 = self.compile_expr(*e1, None, None);
-				let r2 = self.compile_expr(*e2, None, None);
+				let r1 = self.compile_expr(*e1, None, None)?;
+				let r2 = self.compile_expr(*e2, None, None)?;
 				self.ctx.regs.free_temp_reg(r2);
 				self.ctx.regs.free_temp_reg(r1);
 				let instr = match op {
@@ -346,10 +364,10 @@ impl Compiler {
 				self.chunk.emit_byte(r1);
 				self.chunk.emit_byte(r2);
 				needs_copy = false;
-				self.emit_reg(dest)
+				self.emit_reg(dest)?
 			},
 			Expr::UnaOp(op, e) => {
-				let r = self.compile_expr(*e, dest, None);
+				let r = self.compile_expr(*e, dest, None)?;
 				self.ctx.regs.free_temp_reg(r);
 				let instr = match op {
 					UnaOp::Not => InstrType::Not,
@@ -358,15 +376,15 @@ impl Compiler {
 				self.chunk.emit_instr(instr);
 				self.chunk.emit_byte(r);
 				needs_copy = false;
-				self.emit_reg(dest)
+				self.emit_reg(dest)?
 			},
 			Expr::Call(e, mut args) => {
-				let func = self.compile_expr(*e, None, None);
-				let n = u16::try_from(args.len()).unwrap();
-				let arg_range = self.ctx.regs.new_reg_range(n);
+				let func = self.compile_expr(*e, None, None)?;
+				let n = u16::try_from(args.len()).map_err(|_| error_str("Too many function arguments"))?;
+				let arg_range = self.ctx.regs.new_reg_range(n)?;
 				for (i, arg) in args.drain(..).enumerate() {
 					let rout = u8::try_from(usize::from(arg_range) + i).unwrap();
-					self.compile_expr(arg, Some(rout), None);
+					self.compile_expr(arg, Some(rout), None)?;
 				}
 				self.ctx.regs.free_temp_range(arg_range, n);
 				self.ctx.regs.free_temp_reg(func);
@@ -374,14 +392,14 @@ impl Compiler {
 				self.chunk.emit_byte(func);
 				self.chunk.emit_byte(arg_range);
 				needs_copy = false;
-				self.emit_reg(dest)
+				self.emit_reg(dest)?
 			},
 			Expr::Function(args, bl) =>  {
-				let new_chunk = self.compile_chunk(name.unwrap_or_else(|| String::from("<func>")), bl, args);
+				let new_chunk = self.compile_chunk(name.unwrap_or_else(|| String::from("<func>")), bl, args)?;
 				self.chunk.emit_instr(InstrType::Func);
 				self.chunk.emit_byte(new_chunk);
 				needs_copy = false;
-				self.emit_reg(dest)
+				self.emit_reg(dest)?
 			},
 			#[allow(unreachable_patterns)]
 			_ => unimplemented!("Unimplemented expression type: {:?}", expr),
@@ -396,11 +414,11 @@ impl Compiler {
 			}
 		}
 		
-		reg
+		Ok(reg)
 	}
 
 
-	fn compile_block(&mut self, stats: Vec<Stat>) {
+	fn compile_block(&mut self, stats: Vec<Stat>) -> Result<(), HissyError> {
 		let used_before = self.ctx.regs.used;
 		
 		self.ctx.enter_block();
@@ -408,25 +426,25 @@ impl Compiler {
 		for stat in stats {
 			match stat {
 				Stat::ExprStat(e) => {
-					let reg = self.compile_expr(e, None, None);
+					let reg = self.compile_expr(e, None, None)?;
 					self.ctx.regs.free_temp_reg(reg);
 				},
 				Stat::Let((id, _ty), e) => {
 					if let Some(reg) = self.ctx.find_block_local(&id) { // if binding already exists
 						self.ctx.regs.free_reg(reg);
 					}
-					let reg = self.ctx.regs.new_reg();
-					self.compile_expr(e, Some(reg), Some(id.clone()));
+					let reg = self.ctx.regs.new_reg()?;
+					self.compile_expr(e, Some(reg), Some(id.clone()))?;
 					self.ctx.make_local(id, reg);
 				},
 				Stat::Set(id, e) => {
-					let binding = self.get_binding(&id).expect("Referencing undefined binding");
+					let binding = self.get_binding(&id)?.ok_or_else(|| error_str("Referencing undefined binding"))?;
 					match binding {
 						Binding::Local(reg) => {
-							self.compile_expr(e, Some(reg), None);
+							self.compile_expr(e, Some(reg), None)?;
 						},
 						Binding::Upvalue(upv) => {
-							let reg = self.compile_expr(e, None, None);
+							let reg = self.compile_expr(e, None, None)?;
 							self.ctx.regs.free_temp_reg(reg);
 							self.chunk.emit_instr(InstrType::SetUp);
 							self.chunk.emit_byte(upv);
@@ -441,7 +459,7 @@ impl Compiler {
 						let mut after_jmp = None;
 						match cond {
 							Cond::If(e) => {
-								let cond_reg = self.compile_expr(e, None, None);
+								let cond_reg = self.compile_expr(e, None, None)?;
 								
 								// Jump to next branch if false
 								self.ctx.regs.free_temp_reg(cond_reg);
@@ -450,7 +468,7 @@ impl Compiler {
 								self.chunk.emit_byte(0); // Placeholder
 								self.chunk.emit_byte(cond_reg);
 								
-								self.compile_block(bl);
+								self.compile_block(bl)?;
 								
 								if i != last_branch {
 									// Jump out of condition at end of block
@@ -461,23 +479,23 @@ impl Compiler {
 								}
 							},
 							Cond::Else => {
-								self.compile_block(bl);
+								self.compile_block(bl)?;
 							}
 						}
 						
 						if let Some(from) = after_jmp {
-							fill_in_jump_from(&mut self.chunk, from);
+							fill_in_jump_from(&mut self.chunk, from)?;
 						}
 					}
 					
 					// Fill in jumps to end
 					for from in end_jmps {
-						fill_in_jump_from(&mut self.chunk, from);
+						fill_in_jump_from(&mut self.chunk, from)?;
 					}
 				},
 				Stat::While(e, bl) => {
 					let begin = self.chunk.code.len();
-					let cond_reg = self.compile_expr(e, None, None);
+					let cond_reg = self.compile_expr(e, None, None)?;
 					
 					self.ctx.regs.free_temp_reg(cond_reg);
 					self.chunk.emit_instr(InstrType::Jif);
@@ -485,37 +503,39 @@ impl Compiler {
 					self.chunk.emit_byte(0); // Placeholder
 					self.chunk.emit_byte(cond_reg);
 					
-					self.compile_block(bl);
+					self.compile_block(bl)?;
 					
 					self.chunk.emit_instr(InstrType::Jmp);
-					emit_jump_to(&mut self.chunk, begin);
-					fill_in_jump_from(&mut self.chunk, placeholder);
+					emit_jump_to(&mut self.chunk, begin)?;
+					fill_in_jump_from(&mut self.chunk, placeholder)?;
 				},
 				Stat::Log(e) => {
-					let reg = self.compile_expr(e, None, None);
+					let reg = self.compile_expr(e, None, None)?;
 					self.ctx.regs.free_temp_reg(reg);
 					self.chunk.emit_instr(InstrType::Log);
 					self.chunk.emit_byte(reg);
 				},
 				Stat::Return(e) => {
-					let reg = self.compile_expr(e, None, None);
+					let reg = self.compile_expr(e, None, None)?;
 					self.ctx.regs.free_temp_reg(reg);
 					self.chunk.emit_instr(InstrType::Ret);
 					self.chunk.emit_byte(reg);
 				},
 				#[allow(unreachable_patterns)]
-				_ => unimplemented!("Unimplemented statement type: {:?}", stat)
+				_ => return Err(error(format!("Unimplemented statement type: {:?}", stat)))
 			}
 		}
 		
 		self.ctx.leave_block();
 		
-		debug_assert!(used_before == self.ctx.regs.used, "Leaked register");
+		assert!(used_before == self.ctx.regs.used, "Leaked register");
 		// Basic check to make sure no registers have been "leaked"
+		
+		Ok(())
 	}
 
 
-	fn compile_chunk(&mut self, name: String, ast: Vec<Stat>, args: Vec<String>) -> u8 {
+	fn compile_chunk(&mut self, name: String, ast: Vec<Stat>, args: Vec<String>) -> Result<u8, HissyError> {
 		let chunk_id = self.chunk.enter();
 		
 		if self.debug_info {
@@ -525,10 +545,10 @@ impl Compiler {
 		self.ctx.enter();
 		self.ctx.enter_block();
 		for id in args {
-			let reg = self.ctx.regs.new_reg();
+			let reg = self.ctx.regs.new_reg()?;
 			self.ctx.make_local(id, reg);
 		}
-		self.compile_block(ast);
+		self.compile_block(ast)?;
 		self.ctx.leave_block();
 		
 		self.chunk.nb_registers = self.ctx.regs.required;
@@ -539,13 +559,13 @@ impl Compiler {
 		self.ctx.leave();
 		self.chunk.leave();
 		
-		u8::try_from(chunk_id).expect("Too many chunks")
+		u8::try_from(chunk_id).map_err(|_| error_str("Too many chunks"))
 	}
 	
 	/// Compiles a string slice containing Hissy code into a [`Program`], consuming the `Compiler`.
-	pub fn compile_program(mut self, input: &str) -> Result<Program, String> {
+	pub fn compile_program(mut self, input: &str) -> Result<Program, HissyError> {
 		let ast = parse(input)?;
-		self.compile_chunk(String::from("<main>"), ast, Vec::new());
+		self.compile_chunk(String::from("<main>"), ast, Vec::new())?;
 		Ok(Program { debug_info: self.debug_info, chunks: self.chunk.finish() })
 	}
 }

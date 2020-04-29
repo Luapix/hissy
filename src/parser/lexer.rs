@@ -6,6 +6,17 @@ use unicode_xid::UnicodeXID;
 use peg::{Parse, ParseElem, ParseLiteral, ParseSlice, RuleResult, str::LineCol};
 use smallstr::SmallString;
 
+use crate::HissyError;
+
+
+fn error(s: String) -> HissyError {
+	HissyError::Syntax(s)
+}
+
+fn error_str(s: &str) -> HissyError {
+	HissyError::Syntax(String::from(s))
+}
+
 type SymbolStr = SmallString<[u8;6]>;
 
 /// A language token.
@@ -31,7 +42,7 @@ fn is_keyword(s: &str) -> bool {
 	KEYWORDS.contains(&s)
 }
 
-fn parse_number(input: &str, is_integer: bool) -> Result<Token, String> {
+fn parse_number(input: &str, is_integer: bool) -> Result<Token, HissyError> {
 	if is_integer {
 		if let Ok(i) = input.parse::<i32>() {
 			return Ok(Token::Int(i));
@@ -39,7 +50,7 @@ fn parse_number(input: &str, is_integer: bool) -> Result<Token, String> {
 	}
 	input.parse::<f64>()
 		.map(Token::Real)
-		.map_err(|_| "Error while parsing real literal".to_string())
+		.map_err(|_| error_str("Error while parsing real literal"))
 }
 
 static SIMPLE_SYMBOLS: [char; 17] = [
@@ -122,7 +133,7 @@ impl fmt::Display for Tokens {
 }
 
 /// Lexes a string slice into a `Tokens` container.
-pub fn read_tokens(input: &str) -> Result<Tokens, String> {
+pub fn read_tokens(input: &str) -> Result<Tokens, HissyError> {
 	let mut tokens = vec![];
 	let mut token_pos = vec![];
 	let mut it = input.char_indices().peekable();
@@ -173,7 +184,7 @@ pub fn read_tokens(input: &str) -> Result<Tokens, String> {
 				token_pos.push(pos);
 				tokens.push(Token::Newline);
 			} else {
-				return Err("Invalid indentation: ".to_string() + &format!("{:?}", new_indent));
+				return Err(error("Invalid indentation: ".to_string() + &format!("{:?}", new_indent)));
 			}
 		} else {
 			token_pos.push(LineCol { line: cur_line, column: i - line_start + 1, offset: i });
@@ -211,14 +222,14 @@ pub fn read_tokens(input: &str) -> Result<Tokens, String> {
 				let mut contents = String::new();
 				let mut escaping = false;
 				loop {
-					let (_,c) = it.next().ok_or("Unfinished string literal")?;
+					let (_,c) = it.next().ok_or_else(|| error_str("Unfinished string literal"))?;
 					if escaping {
 						contents.push(match c {
 							'\\' | '"' => c,
 							't' => '\t',
 							'r' => '\r',
 							'n' => '\n',
-							_ => return Err("Invalid escape sequence".to_string())
+							_ => return Err(error_str("Invalid escape sequence"))
 						});
 					} else if c == '\\' {
 						escaping = true;
@@ -232,7 +243,7 @@ pub fn read_tokens(input: &str) -> Result<Tokens, String> {
 			} else if let Some(s) = parse_symbol(&mut it, c) {
 				tokens.push(Token::Symbol(s));
 			} else {
-				return Err("Unexpected character: '".to_string() + &c.escape_default().collect::<String>() + "'")
+				return Err(error(format!("Unexpected character: '{}'", c.escape_default())))
 			}
 		}
 		

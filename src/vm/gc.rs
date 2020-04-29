@@ -267,8 +267,9 @@ impl GCHeap {
 /// (dropping all root references and calling [`GCHeap::collect()`] should be enough).
 impl Drop for GCHeap {
 	fn drop(&mut self) {
-		if !self.objects.is_empty() {
-			println!("Warning: GCHeap was not empty when dropped");
+		self.collect();
+		if !self.is_empty() {
+			eprintln!("GC heap could not collect all objects!");
 		}
 	}
 }
