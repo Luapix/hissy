@@ -13,10 +13,6 @@ fn error(s: String) -> HissyError {
 	HissyError::Syntax(s)
 }
 
-fn error_str(s: &str) -> HissyError {
-	HissyError::Syntax(String::from(s))
-}
-
 type SymbolStr = SmallString<[u8;6]>;
 
 /// A language token.
@@ -42,15 +38,13 @@ fn is_keyword(s: &str) -> bool {
 	KEYWORDS.contains(&s)
 }
 
-fn parse_number(input: &str, is_integer: bool) -> Result<Token, HissyError> {
+fn parse_number(input: &str, is_integer: bool) -> Token {
 	if is_integer {
 		if let Ok(i) = input.parse::<i32>() {
-			return Ok(Token::Int(i));
+			return Token::Int(i);
 		}
 	}
-	input.parse::<f64>()
-		.map(Token::Real)
-		.map_err(|_| error_str("Error while parsing real literal"))
+	Token::Real(input.parse::<f64>().expect("Error while parsing real literal"))
 }
 
 static SIMPLE_SYMBOLS: [char; 17] = [
@@ -184,10 +178,11 @@ pub fn read_tokens(input: &str) -> Result<Tokens, HissyError> {
 				token_pos.push(pos);
 				tokens.push(Token::Newline);
 			} else {
-				return Err(error("Invalid indentation: ".to_string() + &format!("{:?}", new_indent)));
+				return Err(error(format!("Invalid indentation {:?} at {}", new_indent, pos)));
 			}
 		} else {
-			token_pos.push(LineCol { line: cur_line, column: i - line_start + 1, offset: i });
+			let pos = LineCol { line: cur_line, column: i - line_start + 1, offset: i };
+			token_pos.push(pos.clone());
 			if c.is_xid_start() {
 				let start = i;
 				skip_chars(&mut it, &|c| c.is_xid_continue());
@@ -216,25 +211,32 @@ pub fn read_tokens(input: &str) -> Result<Tokens, HissyError> {
 					skip_chars(&mut it, &|c| c.is_ascii_digit());
 				}
 				let end = get_next_index(&mut it, input.len());
-				tokens.push(parse_number(&input[start..end], is_integer)?);
+				tokens.push(parse_number(&input[start..end], is_integer));
 			} else if c == '"' {
 				it.next();
 				let mut contents = String::new();
 				let mut escaping = false;
 				loop {
-					let (_,c) = it.next().ok_or_else(|| error_str("Unfinished string literal"))?;
+					let (i,c) = it.next().ok_or_else(|| error(format!("Unfinished string literal starting at {}", pos)))?;
 					if escaping {
+						if c == '\n' {
+							cur_line += 1;
+							line_start = i + 1;
+						}
 						contents.push(match c {
-							'\\' | '"' => c,
+							'\\' | '"' | '\n' => c,
 							't' => '\t',
 							'r' => '\r',
 							'n' => '\n',
-							_ => return Err(error_str("Invalid escape sequence"))
+							_ => return Err(error(format!("Invalid escape sequence '\\{}' in string starting at {}", c.escape_default(), pos)))
 						});
+						escaping = false;
 					} else if c == '\\' {
 						escaping = true;
 					} else if c == '"' {
 						break;
+					} else if c == '\n' {
+						return Err(error(format!("EOL in the middle of string literal starting at {}", pos)));
 					} else {
 						contents.push(c);
 					}
@@ -243,7 +245,7 @@ pub fn read_tokens(input: &str) -> Result<Tokens, HissyError> {
 			} else if let Some(s) = parse_symbol(&mut it, c) {
 				tokens.push(Token::Symbol(s));
 			} else {
-				return Err(error(format!("Unexpected character: '{}'", c.escape_default())))
+				return Err(error(format!("Unexpected character {:?} at {}", c, pos)))
 			}
 		}
 		
