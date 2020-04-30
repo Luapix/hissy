@@ -1,4 +1,5 @@
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::convert::TryFrom;
 use std::fs;
@@ -60,6 +61,7 @@ impl ChunkConstant {
 pub(crate) struct ChunkInfo {
 	pub name: String,
 	pub upvalue_names: Vec<String>,
+	pub line_numbers: Vec<(u16, u16)>, // (position in bytecode, line)
 }
 
 pub(crate) struct Chunk {
@@ -106,6 +108,13 @@ impl Chunk {
 			chunk.upvalues.push(reg);
 		}
 		
+		if debug_info {
+			let nb_line_numbers = read_u16(it)?;
+			for _ in 0..nb_line_numbers {
+				chunk.debug_info.line_numbers.push((read_u16(it)?, read_u16(it)?));
+			}
+		}
+		
 		let code_size = usize::from(read_u16(it)?);
 		chunk.code.extend(&it.take(code_size).copied().collect::<Vec<u8>>());
 		Ok(chunk)
@@ -148,6 +157,14 @@ impl Chunk {
 			write_u8(bytes, *upv);
 			if debug_info {
 				write_small_str(bytes, &self.debug_info.upvalue_names[i]);
+			}
+		}
+		
+		if debug_info {
+			write_into_u16(bytes, self.debug_info.line_numbers.len(), error_str("Too many line numbers to serialize"))?;
+			for (pos, line) in &self.debug_info.line_numbers {
+				write_u16(bytes, *pos);
+				write_u16(bytes, *line);
 			}
 		}
 		
@@ -279,11 +296,19 @@ impl Program {
 				println!(")");
 			}
 			
+			let line_numbers = chunk.debug_info.line_numbers.iter().copied().collect::<HashMap<u16,u16>>();
+			
 			let mut it = chunk.code.iter();
 			let mut pos = 0;
 			while let Some(b) = it.next() {
 				let instr = InstrType::try_from(*b).map_err(|_| error_str("Invalid instruction in bytecode"))?;
-				print!("{}\t{:?}(", pos, instr);
+				print!("{:<5}", pos);
+				if let Some(line) = u16::try_from(pos).ok().and_then(|pos| line_numbers.get(&pos)) {
+					print!("l{:<5}", line);
+				} else {
+					print!("      ");
+				}
+				print!("{:?}(", instr);
 				match instr {
 					Nop => {},
 					Log => {

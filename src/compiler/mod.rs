@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::convert::TryFrom;
 
 use crate::HissyError;
-use crate::parser::{parse, ast::{Expr, Stat, Cond, BinOp, UnaOp}};
+use crate::parser::{parse, ast::{Expr, Stat, Positioned, Block, Cond, BinOp, UnaOp}};
 use crate::vm::{MAX_REGISTERS, InstrType};
 use chunk::{Chunk, ChunkConstant};
 
@@ -418,12 +418,20 @@ impl Compiler {
 	}
 
 
-	fn compile_block(&mut self, stats: Vec<Stat>) -> Result<(), HissyError> {
+	fn compile_block(&mut self, stats: Block) -> Result<(), HissyError> {
 		let used_before = self.ctx.regs.used;
 		
 		self.ctx.enter_block();
 		
-		for stat in stats {
+		for Positioned(stat, (line, _)) in stats {
+			if self.debug_info {
+				let pos = u16::try_from(self.chunk.code.len()).unwrap(); // (The code size is already bounded by the serialization)
+				self.chunk.debug_info.line_numbers.push((
+					pos,
+					u16::try_from(line).map_err(|_| error_str("Line number too large"))?
+				));
+			}
+			
 			match stat {
 				Stat::ExprStat(e) => {
 					let reg = self.compile_expr(e, None, None)?;
@@ -535,7 +543,7 @@ impl Compiler {
 	}
 
 
-	fn compile_chunk(&mut self, name: String, ast: Vec<Stat>, args: Vec<String>) -> Result<u8, HissyError> {
+	fn compile_chunk(&mut self, name: String, ast: Block, args: Vec<String>) -> Result<u8, HissyError> {
 		let chunk_id = self.chunk.enter();
 		
 		if self.debug_info {

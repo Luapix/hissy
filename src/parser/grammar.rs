@@ -4,6 +4,8 @@ extern crate peg;
 use super::lexer::{Token, Tokens};
 use super::ast::*;
 
+use peg::str::LineCol;
+
 peg::parser! {
 	pub grammar peg_parser() for Tokens {
 		
@@ -40,18 +42,18 @@ peg::parser! {
 			}
 		}
 		
-		rule list() -> Expr
-			= sym("[") values:(expression() ** sym(",")) sym("]") { Expr::List(values) }
+		rule list(pos: &Vec<LineCol>) -> Expr
+			= sym("[") values:(expression(pos) ** sym(",")) sym("]") { Expr::List(values) }
 		
-		rule parenthesized() -> Expr = sym("(") e:expression() sym(")") { e }
+		rule parenthesized(pos: &Vec<LineCol>) -> Expr = sym("(") e:expression(pos) sym(")") { e }
 		
-		rule function() -> Expr =
-			sym("fun") f:function_decl() { f.0 }
+		rule function(pos: &Vec<LineCol>) -> Expr =
+			sym("fun") f:function_decl(pos) { f.0 }
 		
-		rule primary_expression() -> Expr
-			= literal() / list() / parenthesized() / function()
+		rule primary_expression(pos: &Vec<LineCol>) -> Expr
+			= literal() / list(pos) / parenthesized(pos) / function(pos)
 		
-		pub rule expression() -> Expr = precedence!{
+		pub rule expression(pos: &Vec<LineCol>) -> Expr = precedence!{
 			x:(@) sym("and") y:@ { Expr::BinOp(BinOp::And, Box::new(x), Box::new(y)) }
 			x:(@) sym("or") y:@  { Expr::BinOp(BinOp::Or,  Box::new(x), Box::new(y)) }
 			--
@@ -75,11 +77,11 @@ peg::parser! {
 			--
 			x:@ sym("^") y:(@) { Expr::BinOp(BinOp::Power,   Box::new(x), Box::new(y)) }
 			--
-			x:@ sym("[") i:expression() sym("]") { Expr::Index(Box::new(x), Box::new(i)) }
-			f:@ sym("(") args:(expression() ** sym(",")) sym(")") { Expr::Call(Box::new(f), args) }
+			x:@ sym("[") i:expression(pos) sym("]") { Expr::Index(Box::new(x), Box::new(i)) }
+			f:@ sym("(") args:(expression(pos) ** sym(",")) sym(")") { Expr::Call(Box::new(f), args) }
 			x:@ sym(".") p:identifier() { Expr::Prop(Box::new(x), p) }
 			--
-			e:primary_expression() { e }
+			e:primary_expression(pos) { e }
 		}
 		
 		rule type_desc() -> Type
@@ -91,41 +93,44 @@ peg::parser! {
 			= sym("->") t:type_desc() { t }
 			/ { Type::Any }
 		
-		rule function_decl() -> (Expr, Type)
-			= sym("(") a:(typed_ident() ** sym(",")) sym(")") r:return_type() b:indented_block() {
+		rule function_decl(pos: &Vec<LineCol>) -> (Expr, Type)
+			= sym("(") a:(typed_ident() ** sym(",")) sym(")") r:return_type() b:indented_block(pos) {
 				let (arg_names, arg_types) = a.iter().cloned().unzip();
 				(Expr::Function(arg_names, b), Type::Function(arg_types, Box::new(r)))
 			}
 		
-		rule if_branch() -> Branch = sym("if") c:expression() b:indented_block() { (Cond::If(c), b) }
-		rule else_if_branch() -> Branch = [Token::Newline] sym("else") b:if_branch() { b }
-		rule else_branch() -> Branch = [Token::Newline] sym("else") b:indented_block() { (Cond::Else, b) }
+		rule if_branch(pos: &Vec<LineCol>) -> Branch = sym("if") c:expression(pos) b:indented_block(pos) { (Cond::If(c), b) }
+		rule else_if_branch(pos: &Vec<LineCol>) -> Branch = [Token::Newline] sym("else") b:if_branch(pos) { b }
+		rule else_branch(pos: &Vec<LineCol>) -> Branch = [Token::Newline] sym("else") b:indented_block(pos) { (Cond::Else, b) }
 		
-		rule statement() -> Stat
-			= sym("let") i:typed_ident() sym("=") e:expression() { Stat::Let(i,e) }
-			/ sym("let") i:identifier() f:function_decl() {
+		rule statement(pos: &Vec<LineCol>) -> Stat
+			= sym("let") i:typed_ident() sym("=") e:expression(pos) { Stat::Let(i,e) }
+			/ sym("let") i:identifier() f:function_decl(pos) {
 				let (fn_expr, fn_type) = f;
 				Stat::Let((i, fn_type), fn_expr)
 			}
-			/ i:if_branch() ei:else_if_branch()* e:else_branch()? {
+			/ i:if_branch(pos) ei:else_if_branch(pos)* e:else_branch(pos)? {
 				let mut branches = vec![i];
 				branches.extend_from_slice(&ei);
 				if let Some(b) = e { branches.push(b) }
 				Stat::Cond(branches)
 			}
-			/ sym("log") e:expression() { Stat::Log(e) }
-			/ sym("return") e:expression() { Stat::Return(e) }
-			/ sym("while") e:expression() b:indented_block() { Stat::While(e, b) }
-			/ i:identifier() sym("=") e:expression() { Stat::Set(i,e) }
-			/ e:expression() { Stat::ExprStat(e) }
+			/ sym("log") e:expression(pos) { Stat::Log(e) }
+			/ sym("return") e:expression(pos) { Stat::Return(e) }
+			/ sym("while") e:expression(pos) b:indented_block(pos) { Stat::While(e, b) }
+			/ i:identifier() sym("=") e:expression(pos) { Stat::Set(i,e) }
+			/ e:expression(pos) { Stat::ExprStat(e) }
 		
-		rule block() -> Vec<Stat>
-			= s:(statement() ** [Token::Newline]) { s }
+		rule positioned_statement(pos: &Vec<LineCol>) -> Positioned<Stat>
+			= p:position!() s:statement(pos) { Positioned(s, (pos[p].line, pos[p].column)) }
 		
-		rule indented_block() -> Vec<Stat>
-			= sym(":") [Token::Indent] b:block() [Token::Dedent] { b }
+		rule block(pos: &Vec<LineCol>) -> Block
+			= s:(positioned_statement(pos) ** [Token::Newline]) { s }
 		
-		pub rule program() -> ProgramAST
-			= [Token::Newline] b:block() [Token::Newline]? { b }
+		rule indented_block(pos: &Vec<LineCol>) -> Block
+			= sym(":") [Token::Indent] b:block(pos) [Token::Dedent] { b }
+		
+		pub rule program(pos: &Vec<LineCol>) -> ProgramAST
+			= [Token::Newline] b:block(pos) [Token::Newline]? { b }
 	}
 }

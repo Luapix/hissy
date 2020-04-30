@@ -112,7 +112,7 @@ fn get_next_index(it: &mut Peekable<CharIndices>, end: usize) -> usize {
 /// Can be Displayed to inspect contents.
 pub struct Tokens {
 	pub tokens: Vec<Token>,
-	token_pos: Vec<LineCol>,
+	pub(super) token_pos: Vec<LineCol>,
 }
 
 impl fmt::Display for Tokens {

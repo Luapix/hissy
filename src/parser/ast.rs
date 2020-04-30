@@ -1,4 +1,7 @@
 
+use std::fmt;
+use std::ops::Deref;
+
 /// A binary operator.
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum BinOp {
@@ -33,7 +36,7 @@ pub enum Expr {
 	Index(Box<Expr>, Box<Expr>),
 	Call(Box<Expr>, Vec<Expr>),
 	Prop(Box<Expr>, String),
-	Function(Vec<String>, Vec<Stat>),
+	Function(Vec<String>, Block),
 }
 
 /// The guard on a condition branch (else / else if).
@@ -44,7 +47,7 @@ pub enum Cond {
 }
 
 /// A branch of a condition (condition + block).
-pub type Branch = (Cond, Vec<Stat>);
+pub type Branch = (Cond, Block);
 
 /// A type description.
 #[derive(Debug, PartialEq, Clone)]
@@ -61,10 +64,27 @@ pub enum Stat {
 	Let((String, Type), Expr),
 	Set(String, Expr),
 	Cond(Vec<Branch>),
-	While(Expr, Vec<Stat>),
+	While(Expr, Block),
 	Log(Expr),
 	Return(Expr),
 }
 
+/// A token with an associated positioned line number
+#[derive(PartialEq, Clone)]
+pub struct Positioned<T>(pub T, pub (usize, usize));
+
+impl<T> Deref for Positioned<T> {
+	type Target = T;
+	fn deref(&self) -> &T { &self.0 }
+}
+
+impl<T: fmt::Debug> fmt::Debug for Positioned<T> {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "{:#?} @ {}:{}", self.0, (self.1).0, (self.1).1)
+	}
+}
+
+pub type Block = Vec<Positioned<Stat>>;
+
 /// A Hissy program.
-pub type ProgramAST = Vec<Stat>;
+pub type ProgramAST = Block;
