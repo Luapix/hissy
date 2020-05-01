@@ -6,12 +6,15 @@ pub mod ast;
 mod grammar;
 
 
-use crate::HissyError;
+use crate::{HissyError, ErrorType};
 use grammar::peg_parser;
 
 /// Parses a string slice containing Hissy code into an Abstract Syntax Tree.
 pub fn parse(input: &str) -> Result<ast::ProgramAST, HissyError> {
 	let tokens = lexer::read_tokens(input)?;
-	peg_parser::program(&tokens, &tokens.token_pos).map_err(|e| HissyError::Syntax(format!("{}", e)))
+	peg_parser::program(&tokens, &tokens.token_pos).map_err(|err| {
+		let err_str = format!("Near {:?}, expected {}", err.location.near, err.expected);
+		HissyError(ErrorType::Syntax, err_str, err.location.line)
+	})
 }
 

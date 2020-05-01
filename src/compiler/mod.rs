@@ -7,7 +7,7 @@ use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::convert::TryFrom;
 
-use crate::HissyError;
+use crate::{HissyError, ErrorType};
 use crate::parser::{parse, ast::{Expr, Stat, Positioned, Block, Cond, BinOp, UnaOp}};
 use crate::vm::{MAX_REGISTERS, InstrType};
 use chunk::{Chunk, ChunkConstant};
@@ -15,11 +15,10 @@ use chunk::{Chunk, ChunkConstant};
 
 
 fn error(s: String) -> HissyError {
-	HissyError::Compilation(s)
+	HissyError(ErrorType::Compilation, s, 0)
 }
-
 fn error_str(s: &str) -> HissyError {
-	HissyError::Compilation(String::from(s))
+	error(String::from(s))
 }
 
 
@@ -328,7 +327,8 @@ impl Compiler {
 			Expr::String(s) => 
 				self.chunk.compile_constant(ChunkConstant::String(s))?,
 			Expr::Id(s) => {
-				let binding = self.get_binding(&s)?.ok_or_else(|| error_str("Referencing undefined binding"))?;
+				let binding = self.get_binding(&s)?
+					.ok_or_else(|| error(format!("Referencing undefined binding '{}'", s)))?;
 				match binding {
 					Binding::Local(reg) => reg,
 					Binding::Upvalue(upv) => {
@@ -424,114 +424,122 @@ impl Compiler {
 		self.ctx.enter_block();
 		
 		for Positioned(stat, (line, _)) in stats {
+			let line = u16::try_from(line).map_err(|_| error_str("Line number too large"))?;
 			if self.debug_info {
 				let pos = u16::try_from(self.chunk.code.len()).unwrap(); // (The code size is already bounded by the serialization)
-				self.chunk.debug_info.line_numbers.push((
-					pos,
-					u16::try_from(line).map_err(|_| error_str("Line number too large"))?
-				));
+				self.chunk.debug_info.line_numbers.push((pos, line));
 			}
 			
-			match stat {
-				Stat::ExprStat(e) => {
-					let reg = self.compile_expr(e, None, None)?;
-					self.ctx.regs.free_temp_reg(reg);
-				},
-				Stat::Let((id, _ty), e) => {
-					if let Some(reg) = self.ctx.find_block_local(&id) { // if binding already exists
-						self.ctx.regs.free_reg(reg);
-					}
-					let reg = self.ctx.regs.new_reg()?;
-					self.compile_expr(e, Some(reg), Some(id.clone()))?;
-					self.ctx.make_local(id, reg);
-				},
-				Stat::Set(id, e) => {
-					let binding = self.get_binding(&id)?.ok_or_else(|| error_str("Referencing undefined binding"))?;
-					match binding {
-						Binding::Local(reg) => {
-							self.compile_expr(e, Some(reg), None)?;
-						},
-						Binding::Upvalue(upv) => {
-							let reg = self.compile_expr(e, None, None)?;
-							self.ctx.regs.free_temp_reg(reg);
-							self.chunk.emit_instr(InstrType::SetUp);
-							self.chunk.emit_byte(upv);
-							self.chunk.emit_byte(reg);
-						},
-					}
-				},
-				Stat::Cond(mut branches) => {
-					let mut end_jmps = vec![];
-					let last_branch = branches.len() - 1;
-					for (i, (cond, bl)) in branches.drain(..).enumerate() {
-						let mut after_jmp = None;
-						match cond {
-							Cond::If(e) => {
-								let cond_reg = self.compile_expr(e, None, None)?;
-								
-								// Jump to next branch if false
-								self.ctx.regs.free_temp_reg(cond_reg);
-								self.chunk.emit_instr(InstrType::Jif);
-								after_jmp = Some(self.chunk.code.len());
-								self.chunk.emit_byte(0); // Placeholder
-								self.chunk.emit_byte(cond_reg);
-								
-								self.compile_block(bl)?;
-								
-								if i != last_branch {
-									// Jump out of condition at end of block
-									self.chunk.emit_instr(InstrType::Jmp);
-									let from2 = self.chunk.code.len();
-									self.chunk.emit_byte(0); // Placeholder 2
-									end_jmps.push(from2);
-								}
+			let compile_stat = || -> Result<(), HissyError> {
+				match stat {
+					Stat::ExprStat(e) => {
+						let reg = self.compile_expr(e, None, None)?;
+						self.ctx.regs.free_temp_reg(reg);
+					},
+					Stat::Let((id, _ty), e) => {
+						if let Some(reg) = self.ctx.find_block_local(&id) { // if binding already exists
+							self.ctx.regs.free_reg(reg);
+						}
+						let reg = self.ctx.regs.new_reg()?;
+						self.compile_expr(e, Some(reg), Some(id.clone()))?;
+						self.ctx.make_local(id, reg);
+					},
+					Stat::Set(id, e) => {
+						let binding = self.get_binding(&id)?
+							.ok_or_else(|| error(format!("Referencing undefined binding '{}'", id)))?;
+						match binding {
+							Binding::Local(reg) => {
+								self.compile_expr(e, Some(reg), None)?;
 							},
-							Cond::Else => {
-								self.compile_block(bl)?;
+							Binding::Upvalue(upv) => {
+								let reg = self.compile_expr(e, None, None)?;
+								self.ctx.regs.free_temp_reg(reg);
+								self.chunk.emit_instr(InstrType::SetUp);
+								self.chunk.emit_byte(upv);
+								self.chunk.emit_byte(reg);
+							},
+						}
+					},
+					Stat::Cond(mut branches) => {
+						let mut end_jmps = vec![];
+						let last_branch = branches.len() - 1;
+						for (i, (cond, bl)) in branches.drain(..).enumerate() {
+							let mut after_jmp = None;
+							match cond {
+								Cond::If(e) => {
+									let cond_reg = self.compile_expr(e, None, None)?;
+									
+									// Jump to next branch if false
+									self.ctx.regs.free_temp_reg(cond_reg);
+									self.chunk.emit_instr(InstrType::Jif);
+									after_jmp = Some(self.chunk.code.len());
+									self.chunk.emit_byte(0); // Placeholder
+									self.chunk.emit_byte(cond_reg);
+									
+									self.compile_block(bl)?;
+									
+									if i != last_branch {
+										// Jump out of condition at end of block
+										self.chunk.emit_instr(InstrType::Jmp);
+										let from2 = self.chunk.code.len();
+										self.chunk.emit_byte(0); // Placeholder 2
+										end_jmps.push(from2);
+									}
+								},
+								Cond::Else => {
+									self.compile_block(bl)?;
+								}
+							}
+							
+							if let Some(from) = after_jmp {
+								fill_in_jump_from(&mut self.chunk, from)?;
 							}
 						}
 						
-						if let Some(from) = after_jmp {
+						// Fill in jumps to end
+						for from in end_jmps {
 							fill_in_jump_from(&mut self.chunk, from)?;
 						}
-					}
-					
-					// Fill in jumps to end
-					for from in end_jmps {
-						fill_in_jump_from(&mut self.chunk, from)?;
-					}
-				},
-				Stat::While(e, bl) => {
-					let begin = self.chunk.code.len();
-					let cond_reg = self.compile_expr(e, None, None)?;
-					
-					self.ctx.regs.free_temp_reg(cond_reg);
-					self.chunk.emit_instr(InstrType::Jif);
-					let placeholder = self.chunk.code.len();
-					self.chunk.emit_byte(0); // Placeholder
-					self.chunk.emit_byte(cond_reg);
-					
-					self.compile_block(bl)?;
-					
-					self.chunk.emit_instr(InstrType::Jmp);
-					emit_jump_to(&mut self.chunk, begin)?;
-					fill_in_jump_from(&mut self.chunk, placeholder)?;
-				},
-				Stat::Log(e) => {
-					let reg = self.compile_expr(e, None, None)?;
-					self.ctx.regs.free_temp_reg(reg);
-					self.chunk.emit_instr(InstrType::Log);
-					self.chunk.emit_byte(reg);
-				},
-				Stat::Return(e) => {
-					let reg = self.compile_expr(e, None, None)?;
-					self.ctx.regs.free_temp_reg(reg);
-					self.chunk.emit_instr(InstrType::Ret);
-					self.chunk.emit_byte(reg);
-				},
-				#[allow(unreachable_patterns)]
-				_ => return Err(error(format!("Unimplemented statement type: {:?}", stat)))
+					},
+					Stat::While(e, bl) => {
+						let begin = self.chunk.code.len();
+						let cond_reg = self.compile_expr(e, None, None)?;
+						
+						self.ctx.regs.free_temp_reg(cond_reg);
+						self.chunk.emit_instr(InstrType::Jif);
+						let placeholder = self.chunk.code.len();
+						self.chunk.emit_byte(0); // Placeholder
+						self.chunk.emit_byte(cond_reg);
+						
+						self.compile_block(bl)?;
+						
+						self.chunk.emit_instr(InstrType::Jmp);
+						emit_jump_to(&mut self.chunk, begin)?;
+						fill_in_jump_from(&mut self.chunk, placeholder)?;
+					},
+					Stat::Log(e) => {
+						let reg = self.compile_expr(e, None, None)?;
+						self.ctx.regs.free_temp_reg(reg);
+						self.chunk.emit_instr(InstrType::Log);
+						self.chunk.emit_byte(reg);
+					},
+					Stat::Return(e) => {
+						let reg = self.compile_expr(e, None, None)?;
+						self.ctx.regs.free_temp_reg(reg);
+						self.chunk.emit_instr(InstrType::Ret);
+						self.chunk.emit_byte(reg);
+					},
+					#[allow(unreachable_patterns)]
+					_ => return Err(error(format!("Unimplemented statement type: {:?}", stat)))
+				}
+				Ok(())
+			};
+			
+			let mut res = compile_stat();
+			if let Err(HissyError(ErrorType::Compilation, err, 0)) = res {
+				res = Err(HissyError(ErrorType::Compilation, err, line));
 			}
+			res?;
 		}
 		
 		self.ctx.leave_block();

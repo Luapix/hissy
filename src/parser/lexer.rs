@@ -6,11 +6,14 @@ use unicode_xid::UnicodeXID;
 use peg::{Parse, ParseElem, ParseLiteral, ParseSlice, RuleResult, str::LineCol};
 use smallstr::SmallString;
 
-use crate::HissyError;
+use crate::{HissyError, ErrorType};
 
 
-fn error(s: String) -> HissyError {
-	HissyError::Syntax(s)
+fn error(s: String, pos: LineCol) -> HissyError {
+	HissyError(ErrorType::Syntax, s, pos.line as u16)
+}
+fn error_str(s: &str, pos: LineCol) -> HissyError {
+	error(String::from(s), pos)
 }
 
 type SymbolStr = SmallString<[u8;6]>;
@@ -24,14 +27,16 @@ pub enum Token {
 	Real(f64),
 	String(String),
 	Newline, Indent, Dedent,
+	EOF,
 }
 
-static KEYWORDS: [&str; 13] = [
+static KEYWORDS: [&str; 14] = [
 	"let", "if", "else", "while",
 	"not", "and", "or",
 	"nil", "true", "false",
 	"return", "log",
-	"fun"
+	"fun",
+	"pass",
 ];
 
 fn is_keyword(s: &str) -> bool {
@@ -134,10 +139,9 @@ pub fn read_tokens(input: &str) -> Result<Tokens, HissyError> {
 	let mut indent_levels = vec![""];
 	let mut cur_line = 1;
 	let mut line_start = 0;
-	let mut at_start = true;
-	while let Some((i, c)) = it.peek().copied() {
-		if at_start || c == '\r' || c == '\n' { // Get new indent
-			if at_start { at_start = false; }
+	
+	'outer: while let Some((i,c)) = it.peek().copied() {
+		if c.is_ascii_whitespace() { // Get indent
 			let mut start = i;
 			let end;
 			loop {
@@ -152,9 +156,8 @@ pub fn read_tokens(input: &str) -> Result<Tokens, HissyError> {
 						start = line_start;
 					}
 					it.next();
-				} else {
-					end = input.len();
-					break;
+				} else { // If at end of file, ignore whitespace
+					break 'outer;
 				}
 			}
 			
@@ -178,11 +181,13 @@ pub fn read_tokens(input: &str) -> Result<Tokens, HissyError> {
 				token_pos.push(pos);
 				tokens.push(Token::Newline);
 			} else {
-				return Err(error(format!("Invalid indentation {:?} at {}", new_indent, pos)));
+				return Err(error(format!("Invalid indentation {:?}", new_indent), pos));
 			}
+			
 		} else {
 			let pos = LineCol { line: cur_line, column: i - line_start + 1, offset: i };
 			token_pos.push(pos.clone());
+			
 			if c.is_xid_start() {
 				let start = i;
 				skip_chars(&mut it, &|c| c.is_xid_continue());
@@ -217,7 +222,7 @@ pub fn read_tokens(input: &str) -> Result<Tokens, HissyError> {
 				let mut contents = String::new();
 				let mut escaping = false;
 				loop {
-					let (i,c) = it.next().ok_or_else(|| error(format!("Unfinished string literal starting at {}", pos)))?;
+					let (i,c) = it.next().ok_or_else(|| error_str("Unfinished string literal", pos.clone()))?;
 					if escaping {
 						if c == '\n' {
 							cur_line += 1;
@@ -228,7 +233,7 @@ pub fn read_tokens(input: &str) -> Result<Tokens, HissyError> {
 							't' => '\t',
 							'r' => '\r',
 							'n' => '\n',
-							_ => return Err(error(format!("Invalid escape sequence '\\{}' in string starting at {}", c.escape_default(), pos)))
+							_ => return Err(error(format!("Invalid escape sequence '\\{}' in string", c.escape_default()), pos))
 						});
 						escaping = false;
 					} else if c == '\\' {
@@ -236,7 +241,7 @@ pub fn read_tokens(input: &str) -> Result<Tokens, HissyError> {
 					} else if c == '"' {
 						break;
 					} else if c == '\n' {
-						return Err(error(format!("EOL in the middle of string literal starting at {}", pos)));
+						return Err(error_str("EOL in the middle of string", pos));
 					} else {
 						contents.push(c);
 					}
@@ -245,12 +250,25 @@ pub fn read_tokens(input: &str) -> Result<Tokens, HissyError> {
 			} else if let Some(s) = parse_symbol(&mut it, c) {
 				tokens.push(Token::Symbol(s));
 			} else {
-				return Err(error(format!("Unexpected character {:?} at {}", c, pos)))
+				return Err(error(format!("Unexpected character {:?}", c), pos))
 			}
 		}
 		
 		skip_chars(&mut it, &|c| c == ' ' || c == '\t');
 	}
+	
+	let i = input.len();
+	let pos = LineCol { line: cur_line, column: i - line_start + 1, offset: i };
+	
+	while indent_levels.len() > 1 {
+		indent_levels.pop();
+		token_pos.push(pos.clone());
+		tokens.push(Token::Dedent);
+	}
+	
+	token_pos.push(pos);
+	tokens.push(Token::EOF);
+	
 	Ok(Tokens { tokens, token_pos })
 }
 
@@ -259,13 +277,26 @@ impl Tokens {
 	pub fn is_empty(&self) -> bool { self.tokens.is_empty() }
 }
 
+pub struct Position {
+	pub(crate) near: Token,
+	pub(crate) line: u16,
+}
+
+impl fmt::Display for Position {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "line {} near {:?}", self.line, self.near)
+	}
+}
+
 impl Parse for Tokens {
-	type PositionRepr = String;
+	type PositionRepr = Position;
 	
 	fn start(&self) -> usize { 0 }
 	fn position_repr(&self, p: usize) -> Self::PositionRepr {
-		self.tokens.get(p).map_or("EOF".to_string(),
-			|t| format!("{} near {:?}", self.token_pos[p], t))
+		Position {
+			near: self.tokens[p-1].clone(),
+			line: self.token_pos[p-1].line as u16,
+		}
 	}
 }
 

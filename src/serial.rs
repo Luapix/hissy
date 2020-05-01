@@ -2,11 +2,11 @@
 use std::fmt::Debug;
 use std::convert::{TryFrom, TryInto};
 
-use crate::HissyError;
+use crate::{HissyError, ErrorType};
 
 
 fn error_str(s: &str) -> HissyError {
-	HissyError::IO(String::from(s))
+	HissyError(ErrorType::IO, String::from(s), 0)
 }
 fn eof() -> HissyError {
 	error_str("Unexpected EOF")

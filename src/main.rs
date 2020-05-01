@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use docopt::Docopt;
 
-use hissy_lib::HissyError;
+use hissy_lib::{HissyError, ErrorType};
 use hissy_lib::parser;
 use hissy_lib::parser::{lexer::{Tokens, read_tokens}, ast::ProgramAST};
 use hissy_lib::compiler::{Program, Compiler};
@@ -14,22 +14,25 @@ use hissy_lib::vm::{gc::GCHeap, run_program};
 
 
 fn error(s: String) -> HissyError {
-	HissyError::IO(s)
+	HissyError(ErrorType::IO, s, 0)
 }
 fn error_str(s: &str) -> HissyError {
-	HissyError::IO(String::from(s))
+	error(String::from(s))
 }
+
+const GREEN: &str = "\u{001b}[32;1m";
+const RESET: &str = "\u{001b}[0m";
 
 fn display_result<T: Display>(r: Result<T, HissyError>) {
 	match r {
-		Ok(r) => println!("☑  Success: {}", r),
+		Ok(r) => println!("{}Success:{} {}", GREEN, RESET, r),
 		Err(e) => eprintln!("{}", e),
 	}
 }
 
 fn debug_result<T: Debug>(r: Result<T, HissyError>) {
 	match r {
-		Ok(r) => println!("☑  Success: {:#?}", r),
+		Ok(r) => println!("{}Success:{} {:#?}", GREEN, RESET, r),
 		Err(e) => eprintln!("{}", e),
 	}
 }

@@ -127,10 +127,14 @@ peg::parser! {
 		rule block(pos: &Vec<LineCol>) -> Block
 			= s:(positioned_statement(pos) ** [Token::Newline]) { s }
 		
+		rule block_or_pass(pos: &Vec<LineCol>) -> Block
+			= sym("pass") { vec![] }
+			/ b:block(pos) { b }
+		
 		rule indented_block(pos: &Vec<LineCol>) -> Block
-			= sym(":") [Token::Indent] b:block(pos) [Token::Dedent] { b }
+			= sym(":") [Token::Indent] b:block_or_pass(pos) [Token::Dedent] { b }
 		
 		pub rule program(pos: &Vec<LineCol>) -> ProgramAST
-			= [Token::Newline] b:block(pos) [Token::Newline]? { b }
+			= [Token::Newline]? b:block(pos) [Token::Newline]? [Token::EOF] { b }
 	}
 }

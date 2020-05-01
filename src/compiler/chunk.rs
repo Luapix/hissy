@@ -5,13 +5,13 @@ use std::convert::TryFrom;
 use std::fs;
 use std::slice;
 
-use crate::HissyError;
+use crate::{HissyError, ErrorType};
 use crate::vm::{MAX_REGISTERS, InstrType, InstrType::*, value::{NIL, TRUE, FALSE, Value}, gc::GCHeap};
 use crate::serial::*;
 
 
 fn error_str(s: &str) -> HissyError {
-	HissyError::IO(String::from(s))
+	HissyError(ErrorType::IO, String::from(s), 0)
 }
 
 
@@ -187,7 +187,7 @@ impl Chunk {
 		let reg = 255 - self.constants.len();
 		self.constants.push(val);
 		u8::try_from(reg).ok().filter(|r| *r >= MAX_REGISTERS)
-			.ok_or_else(|| HissyError::Compilation(String::from("Too many constants required")))
+			.ok_or_else(|| HissyError(ErrorType::Compilation, String::from("Too many constants required"), 0))
 	}
 	
 	fn format_reg(&self, it: &mut slice::Iter<u8>) -> Result<String, HissyError> {

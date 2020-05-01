@@ -21,22 +21,25 @@ use std::fmt;
 use std::error::Error;
 
 #[derive(Debug)]
-pub enum HissyError {
-	Syntax(String),
-	Compilation(String),
-	Execution(String),
-	IO(String),
+pub enum ErrorType {
+	Syntax,
+	Compilation,
+	Execution,
+	IO,
 }
+
+#[derive(Debug)]
+pub struct HissyError(pub ErrorType, pub String, pub u16);
+
+const RED: &str = "\u{001b}[31;1m";
+const RESET: &str = "\u{001b}[0m";
 
 impl fmt::Display for HissyError {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "❎  ")?;
-		match self {
-			HissyError::Syntax(s) => write!(f, "Syntax error: {}", s),
-			HissyError::Compilation(s) => write!(f, "Compilation error: {}", s),
-			HissyError::Execution(s) => write!(f, "Execution error: {}", s),
-			HissyError::IO(s) => write!(f, "IO error: {}", s),
-		}
+		write!(f, "{}", RED)?;
+		let HissyError(ty, s, line) = self;
+		let line_str = if *line != 0 { format!(" at line {}", line) } else { String::new() };
+		write!(f, "{:?} error{}:{} {}", ty, line_str, RESET, s)
 	}
 }
 
