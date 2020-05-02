@@ -10,8 +10,11 @@ use crate::vm::{MAX_REGISTERS, InstrType, InstrType::*, value::{NIL, TRUE, FALSE
 use crate::serial::*;
 
 
+fn error(s: String) -> HissyError {
+	HissyError(ErrorType::IO, s, 0)
+}
 fn error_str(s: &str) -> HissyError {
-	HissyError(ErrorType::IO, String::from(s), 0)
+	error(String::from(s))
 }
 
 
@@ -184,10 +187,10 @@ impl Chunk {
 	
 	// Adds constant to the list of constants in the chunk, and return the constant's register index
 	pub fn compile_constant(&mut self, val: ChunkConstant) -> Result<u8, HissyError> {
-		let reg = 255 - self.constants.len();
+		let reg = MAX_REGISTERS as usize + self.constants.len();
 		self.constants.push(val);
-		u8::try_from(reg).ok().filter(|r| *r >= MAX_REGISTERS)
-			.ok_or_else(|| HissyError(ErrorType::Compilation, String::from("Too many constants required"), 0))
+		u8::try_from(reg)
+			.map_err(|_| HissyError(ErrorType::Compilation, String::from("Too many constants required"), 0))
 	}
 	
 	fn format_reg(&self, it: &mut slice::Iter<u8>) -> Result<String, HissyError> {
@@ -195,7 +198,7 @@ impl Chunk {
 		if reg < MAX_REGISTERS {
 			Ok(format!("r{}", reg))
 		} else {
-			let cst = usize::try_from(255 - reg).unwrap();
+			let cst = usize::try_from(reg - MAX_REGISTERS).unwrap();
 			Ok(self.constants[cst].repr())
 		}
 	}
@@ -215,7 +218,7 @@ pub struct Program {
 }
 
 const MAGIC_BYTES: &[u8; 4] = b"hsyc";
-const FORMAT_VER: u16 = 2;
+const FORMAT_VER: u16 = 3;
 
 impl Program {
 	/// Reads a `Program` from a bytecode file.
@@ -228,8 +231,9 @@ impl Program {
 		if &first_bytes != MAGIC_BYTES {
 			return Err(error_str("Invalid .hsyc file"));
 		}
-		if read_u16(&mut it)? != FORMAT_VER {
-			return Err(error_str("Unexpected .hsyc file format version"));
+		let version = read_u16(&mut it)?;
+		if version != FORMAT_VER {
+			return Err(error(format!("Bytecode file format version is {}, expected {}", version, FORMAT_VER)));
 		}
 		
 		let options = read_u8(&mut it)?;

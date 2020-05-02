@@ -134,7 +134,7 @@ impl Registers {
 			let reg2 = self.window_start + usize::from(reg);
 			self.registers.get(reg2).ok_or_else(|| error_str("Invalid register")).map(ValueRef::Reg)
 		} else {
-			let cst_idx = usize::try_from(255 - reg).unwrap();
+			let cst_idx = usize::try_from(reg - MAX_REGISTERS).unwrap();
 			let cst = chunk.constants.get(cst_idx).ok_or_else(|| error_str("Invalid constant"));
 			cst.map(|cst| ValueRef::Temp(cst.to_value(heap)))
 		}
@@ -310,14 +310,18 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) -> Result<(), HissyErro
 						let chunk = program.chunks.get(chunk_id as usize)
 							.ok_or_else(|| error_str("Invalid chunk id"))?;
 						let cur_call = vm.calls.last_mut().unwrap();
-						let upvalues = chunk.upvalues.iter().map(|reg| {
-							if let Some(upv) = cur_call.upvalues.get(&reg) {
-								upv.clone()
-							} else {
-								let idx = cur_call.reg_win.0 + (*reg as usize);
-								let upv = heap.make_ref(Upvalue::new(idx));
-								cur_call.upvalues.insert(*reg, upv.clone());
-								upv
+						let upvalues = chunk.upvalues.iter().copied().map(|reg| {
+							if reg < MAX_REGISTERS { // Upvalue points to register 
+								if let Some(upv) = cur_call.upvalues.get(&reg) {
+									upv.clone()
+								} else {
+									let idx = cur_call.reg_win.0 + (reg as usize);
+									let upv = heap.make_ref(Upvalue::new(idx));
+									cur_call.upvalues.insert(reg, upv.clone());
+									upv
+								}
+							} else { // Upvalue points to upvalue
+								cur_call.closure.upvalues[(reg - MAX_REGISTERS) as usize].clone()
 							}
 						}).collect();
 						*vm.regs.mut_reg(rout) = heap.make_value(Closure::new(chunk_id, upvalues));
