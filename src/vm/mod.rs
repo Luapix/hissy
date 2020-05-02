@@ -24,7 +24,6 @@
 //! - `Ret(rc)`: Returns `rc` from the current function
 //! - `Jmp(a)`: Unconditional jump to `a`
 //! - `Jit/Jif(a, rc)`: Jumps to `a` if `rc` is true/false (panics if not a boolean)
-//! - `Log(rc)`: Logs `rc` to standard output
 //! 
 
 /// Garbage collector and tools for manipulating values in the GC heap.
@@ -33,6 +32,7 @@ pub mod gc;
 pub mod value;
 mod op;
 mod object;
+pub(crate) mod prelude;
 
 
 use std::collections::HashMap;
@@ -47,27 +47,29 @@ use crate::compiler::chunk::{Chunk, Program};
 
 use gc::{GCHeap, GCRef};
 use value::{Value, NIL};
-use object::{Upvalue, UpvalueData, Closure};
+use object::{Upvalue, UpvalueData, Closure, NativeFunction};
 
 
 pub(crate) const MAX_REGISTERS: u8 = 128;
 
 
+fn error(s: String) -> HissyError {
+	HissyError(ErrorType::Execution, s, 0)
+}
 fn error_str(s: &str) -> HissyError {
-	HissyError(ErrorType::Execution, String::from(s), 0)
+	error(String::from(s))
 }
 
 #[derive(Debug, TryFromPrimitive)]
 #[repr(u8)]
 pub(crate) enum InstrType {
 	Nop,
-	Cpy, GetUp, SetUp,
+	Cpy, GetUp, SetUp, GetExt,
 	Neg, Add, Sub, Mul, Div, Mod, Pow,
 	Not, Or, And,
 	Eq, Neq, Lth, Leq, Gth, Geq,
 	Func, Call, Ret,
 	Jmp, Jit, Jif,
-	Log,
 }
 
 
@@ -178,6 +180,7 @@ struct VMState<'a> {
 	chunk: &'a Chunk,
 	it: slice::Iter<'a, u8>,
 	calls: Vec<ExecRecord>,
+	external: Vec<Value>,
 }
 
 impl<'a> VMState<'a> {
@@ -188,6 +191,7 @@ impl<'a> VMState<'a> {
 			chunk: program.chunks.get(0).expect("Program contains no chunks"),
 			it: [].iter(),
 			calls: vec![],
+			external: vec![],
 		};
 		vm.regs.allocate(vm.chunk.nb_registers);
 		vm
@@ -241,6 +245,9 @@ impl<'a> VMState<'a> {
 /// Runs a compiled Hissy program, using an existing GC heap.
 pub fn run_program(heap: &mut GCHeap, program: &Program) -> Result<(), HissyError> {
 	let mut vm = VMState::new(program);
+	
+	vm.external.extend(prelude::create(heap));
+	
 	let main = heap.make_ref(Closure::new(0, vec![]));
 	vm.call(program, main, 0, None);
 	
@@ -329,11 +336,18 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) -> Result<(), HissyErro
 					InstrType::Call => {
 						let func = vm.regs.reg_or_cst(vm.chunk, heap, read_u8(&mut vm.it)?)?;
 						let args_start = read_u8(&mut vm.it)?;
+						let args_cnt = read_u8(&mut vm.it)?;
 						let rout = read_u8(&mut vm.it)?;
-						let func = GCRef::<Closure>::try_from(func.clone())
-							.map_err(|_| error_str("Cannot call value"))?;
-						
-						vm.call(program, func, args_start, Some(rout));
+						if let Ok(func) = GCRef::<Closure>::try_from(func.clone()) {
+							vm.call(program, func, args_start, Some(rout));
+						} else if let Ok(func) = GCRef::<NativeFunction>::try_from(func.clone()) {
+							let args_start_abs = vm.regs.window_start + (args_start as usize);
+							let args: &[Value] = &vm.regs.registers[args_start_abs..args_start_abs + (args_cnt as usize)];
+							let res = func.call(args.iter().cloned().collect())?;
+							*vm.regs.mut_reg(rout) = res;
+						} else {
+							return Err(error(format!("Cannot call value {}", func.repr())));
+						}
 					},
 					InstrType::Ret => {
 						let rin = read_u8(&mut vm.it)?;
@@ -363,10 +377,6 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) -> Result<(), HissyErro
 							vm.it = iter_from(&vm.chunk.code, final_add);
 						}
 					},
-					InstrType::Log => {
-						let v = vm.regs.reg_or_cst(vm.chunk, heap, read_u8(&mut vm.it)?)?;
-						println!("{}", v.repr());
-					},
 					InstrType::GetUp => {
 						let upv_idx = read_u8(&mut vm.it)?;
 						let rout = read_u8(&mut vm.it)?;
@@ -378,6 +388,12 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) -> Result<(), HissyErro
 						let rin = read_u8(&mut vm.it)?;
 						let upv = vm.calls.last().unwrap().closure.upvalues[upv_idx as usize].clone();
 						vm.regs.set_upvalue(upv, vm.regs.reg_or_cst(vm.chunk, heap, rin)?.clone());
+					},
+					InstrType::GetExt => {
+						let ext_idx = read_u16(&mut vm.it)?;
+						let rout = read_u8(&mut vm.it)?;
+						*vm.regs.mut_reg(rout) = vm.external.get(ext_idx as usize)
+							.ok_or_else(|| error_str("Invalid external value"))?.clone();
 					},
 					#[allow(unreachable_patterns)]
 					i => unimplemented!("Unimplemented instruction: {:?}", i)

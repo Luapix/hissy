@@ -65,7 +65,6 @@ pub enum Stat {
 	Set(String, Expr),
 	Cond(Vec<Branch>),
 	While(Expr, Block),
-	Log(Expr),
 	Return(Expr),
 }
 

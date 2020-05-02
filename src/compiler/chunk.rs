@@ -218,7 +218,7 @@ pub struct Program {
 }
 
 const MAGIC_BYTES: &[u8; 4] = b"hsyc";
-const FORMAT_VER: u16 = 3;
+const FORMAT_VER: u16 = 4;
 
 impl Program {
 	/// Reads a `Program` from a bytecode file.
@@ -315,9 +315,6 @@ impl Program {
 				print!("{:?}(", instr);
 				match instr {
 					Nop => {},
-					Log => {
-						print!("{}", chunk.format_reg(&mut it)?);
-					},
 					Cpy | Neg | Not => {
 						print!("{}, {}", chunk.format_reg(&mut it)?, chunk.format_reg(&mut it)?);
 					},
@@ -329,7 +326,7 @@ impl Program {
 						print!("{}, {}", self.format_chunk_name(read_u8(&mut it)? as usize)?, chunk.format_reg(&mut it)?);
 					},
 					Call => {
-						print!("{}, {}, {}", chunk.format_reg(&mut it)?, chunk.format_reg(&mut it)?, chunk.format_reg(&mut it)?);
+						print!("{}, {}, {}, {}", chunk.format_reg(&mut it)?, chunk.format_reg(&mut it)?, read_u8(&mut it)?, chunk.format_reg(&mut it)?);
 					},
 					Ret => {
 						print!("{}", chunk.format_reg(&mut it)?);
@@ -342,6 +339,9 @@ impl Program {
 					},
 					GetUp | SetUp => {
 						print!("u{}, {}", read_u8(&mut it)?, chunk.format_reg(&mut it)?);
+					},
+					GetExt => {
+						print!("e{}, {}", read_u16(&mut it)?, chunk.format_reg(&mut it)?);
 					},
 					#[allow(unreachable_patterns)]
 					_ => unimplemented!("Unimplemented disassembly for instruction: {:?}", instr)

@@ -8,8 +8,9 @@ use std::collections::HashMap;
 use std::convert::TryFrom;
 
 use crate::{HissyError, ErrorType};
+use crate::serial::write_u16;
 use crate::parser::{parse, ast::{Expr, Stat, Positioned, Block, Cond, BinOp, UnaOp}};
-use crate::vm::{MAX_REGISTERS, InstrType};
+use crate::vm::{MAX_REGISTERS, InstrType, prelude};
 use chunk::{Chunk, ChunkConstant};
 
 
@@ -65,11 +66,11 @@ impl ChunkRegisters {
 		Ok(new_reg)
 	}
 	
-	pub fn new_reg_range(&mut self, n: u16) -> Result<u8, HissyError> {
-		u8::try_from(self.used + n - 1).ok().filter(|r| *r < MAX_REGISTERS)
+	pub fn new_reg_range(&mut self, n: u8) -> Result<u8, HissyError> {
+		u8::try_from(self.used + (n as u16) - 1).ok().filter(|r| *r < MAX_REGISTERS)
 			.ok_or_else(|| error_str("Cannot compile: Too many registers required"))?;
 		let range_start = u8::try_from(self.used).unwrap();
-		self.used += n;
+		self.used += n as u16;
 		if self.used > self.required {
 			self.required = self.used
 		}
@@ -90,9 +91,9 @@ impl ChunkRegisters {
 		}
 	}
 	
-	pub fn free_reg_range(&mut self, start: u8, n: u16) {
-		assert!(u16::from(start) + n == self.used, "Registers are not freed in FIFO order");
-		self.used -= n;
+	pub fn free_reg_range(&mut self, start: u8, n: u8) {
+		assert!((start as u16) + (n as u16) == self.used, "Registers are not freed in FIFO order");
+		self.used -= n as u16;
 		if self.local_cnt > self.used {
 			self.local_cnt = self.used;
 		}
@@ -105,7 +106,7 @@ impl ChunkRegisters {
 		}
 	}
 	
-	pub fn free_temp_range(&mut self, start: u8, n: u16) {
+	pub fn free_temp_range(&mut self, start: u8, n: u8) {
 		if u16::from(start) >= self.local_cnt {
 			self.free_reg_range(start, n);
 		}
@@ -116,18 +117,7 @@ impl ChunkRegisters {
 enum Binding {
 	Local(u8),
 	Upvalue(u8),
-}
-
-// Note: registers 128-255 correspond to constants in bytecode,
-// but correspond to upvalues in the parent chunk in upvalue tables.
-
-impl Binding {
-	fn encoded(&self) -> u8 {
-		match self {
-			Binding::Local(reg) => *reg,
-			Binding::Upvalue(upv) => upv + MAX_REGISTERS,
-		}
-	}
+	External(u16),
 }
 
 
@@ -197,11 +187,15 @@ impl ChunkContext {
 
 struct Context {
 	stack: Vec<ChunkContext>,
+	external: Vec<String>,
 }
 
 impl Context {
 	pub fn new() -> Context {
-		Context { stack: Vec::new() }
+		Context {
+			stack: Vec::new(),
+			external: prelude::list(),
+		}
 	}
 	
 	fn enter(&mut self) {
@@ -224,10 +218,19 @@ impl Context {
 			if let Some((i, mut binding)) = binding {
 				// Set it as an upvalue in all inner chunks successively.
 				for ctx in self.stack[i+1..].iter_mut() {
-					let upv = ctx.make_upvalue(id.to_string(), binding.encoded())?;
+					let encoded = match binding {
+						Binding::Local(reg) => reg,
+						Binding::Upvalue(upv) => upv + MAX_REGISTERS,
+						_ => unreachable!(),
+					};
+					// Note: registers 128-255 correspond to constants in bytecode,
+					// but correspond to upvalues in the parent chunk in upvalue tables.
+					let upv = ctx.make_upvalue(id.to_string(), encoded)?;
 					binding = Binding::Upvalue(upv);
 				}
 				Ok(Some(binding))
+			} else if let Some(ext_idx) = self.external.iter().position(|id2| id == id2) {
+				Ok(Some(Binding::External(u16::try_from(ext_idx).expect("External index is too high"))))
 			} else {
 				Ok(None)
 			}
@@ -299,7 +302,11 @@ pub struct Compiler {
 impl Compiler {
 	/// Creates a new `Compiler` object.
 	pub fn new(debug_info: bool) -> Compiler {
-		Compiler { debug_info, ctx: Context::new(), chunk: ChunkManager::new() }
+		Compiler {
+			debug_info,
+			ctx: Context::new(),
+			chunk: ChunkManager::new(),
+		}
 	}
 	
 	// Emits register to chunk; dest if Some, else new_reg()
@@ -337,6 +344,12 @@ impl Compiler {
 						needs_copy = false;
 						self.emit_reg(dest)?
 					},
+					Binding::External(ext_idx) => {
+						self.chunk.emit_instr(InstrType::GetExt);
+						write_u16(&mut self.chunk.code, ext_idx);
+						needs_copy = false;
+						self.emit_reg(dest)?
+					}
 				}
 			},
 			Expr::BinOp(op, e1, e2) => {
@@ -380,7 +393,7 @@ impl Compiler {
 			},
 			Expr::Call(e, mut args) => {
 				let func = self.compile_expr(*e, None, None)?;
-				let n = u16::try_from(args.len()).map_err(|_| error_str("Too many function arguments"))?;
+				let n = u8::try_from(args.len()).map_err(|_| error_str("Too many function arguments"))?;
 				let arg_range = self.ctx.regs.new_reg_range(n)?;
 				for (i, arg) in args.drain(..).enumerate() {
 					let rout = u8::try_from(usize::from(arg_range) + i).unwrap();
@@ -391,6 +404,7 @@ impl Compiler {
 				self.chunk.emit_instr(InstrType::Call);
 				self.chunk.emit_byte(func);
 				self.chunk.emit_byte(arg_range);
+				self.chunk.emit_byte(n);
 				needs_copy = false;
 				self.emit_reg(dest)?
 			},
@@ -458,6 +472,9 @@ impl Compiler {
 								self.chunk.emit_byte(upv);
 								self.chunk.emit_byte(reg);
 							},
+							Binding::External(_) => {
+								return Err(error(format!("Cannot set external value '{}'", id)));
+							},
 						}
 					},
 					Stat::Cond(mut branches) => {
@@ -516,12 +533,6 @@ impl Compiler {
 						self.chunk.emit_instr(InstrType::Jmp);
 						emit_jump_to(&mut self.chunk, begin)?;
 						fill_in_jump_from(&mut self.chunk, placeholder)?;
-					},
-					Stat::Log(e) => {
-						let reg = self.compile_expr(e, None, None)?;
-						self.ctx.regs.free_temp_reg(reg);
-						self.chunk.emit_instr(InstrType::Log);
-						self.chunk.emit_byte(reg);
 					},
 					Stat::Return(e) => {
 						let reg = self.compile_expr(e, None, None)?;

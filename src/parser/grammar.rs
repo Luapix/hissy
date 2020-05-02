@@ -115,7 +115,6 @@ peg::parser! {
 				if let Some(b) = e { branches.push(b) }
 				Stat::Cond(branches)
 			}
-			/ sym("log") e:expression(pos) { Stat::Log(e) }
 			/ sym("return") e:expression(pos) { Stat::Return(e) }
 			/ sym("while") e:expression(pos) b:indented_block(pos) { Stat::While(e, b) }
 			/ i:identifier() sym("=") e:expression(pos) { Stat::Set(i,e) }

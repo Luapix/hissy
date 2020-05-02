@@ -7,35 +7,20 @@ use crate::HissyError;
 use super::value::Value;
 use super::gc::{Traceable, GC, GCRef};
 
-impl Traceable for String {
-	fn mark(&mut self) {}
-	fn unroot(&mut self) {}
-}
+impl Traceable for String {}
 
 impl Traceable for Vec<Value> {
-	fn unroot(&mut self) {
+	fn touch(&self, initial: bool) {
 		for el in self {
-			el.unroot();
-		}
-	}
-	
-	fn mark(&mut self) {
-		for el in self {
-			el.mark();
+			el.touch(initial);
 		}
 	}
 }
 
 impl<T: GC> Traceable for Vec<GCRef<T>> {
-	fn unroot(&mut self) {
+	fn touch(&self, initial: bool) {
 		for el in self {
-			el.unroot();
-		}
-	}
-	
-	fn mark(&mut self) {
-		for el in self {
-			el.mark();
+			el.touch(initial);
 		}
 	}
 }
@@ -57,18 +42,15 @@ impl Upvalue {
 		self.0.borrow().clone()
 	}
 	
-	pub fn set_inside(&self, mut val: Value) {
-		val.unroot();
+	pub fn set_inside(&self, val: Value) {
+		val.touch(true);
 		self.0.replace(UpvalueData::OnHeap(val));
 	}
 }
 
 impl Traceable for Upvalue {
-	fn mark(&mut self) {
-		if let UpvalueData::OnHeap(val) = self.0.borrow().deref() { val.mark(); }
-	}
-	fn unroot(&mut self) {
-		if let UpvalueData::OnHeap(val) = self.0.get_mut() { val.unroot(); }
+	fn touch(&self, initial: bool) {
+		if let UpvalueData::OnHeap(val) = self.0.borrow().deref() { val.touch(initial); }
 	}
 }
 
@@ -95,8 +77,7 @@ impl Closure {
 }
 
 impl Traceable for Closure {
-	fn mark(&mut self) { self.upvalues.mark(); }
-	fn unroot(&mut self) { self.upvalues.unroot(); }
+	fn touch(&self, initial: bool) { self.upvalues.touch(initial); }
 }
 
 impl fmt::Debug for Closure {
@@ -107,30 +88,26 @@ impl fmt::Debug for Closure {
 
 
 pub struct NativeFunction {
-	pub fun: Box<dyn FnMut(Vec<Value>) -> Result<Value, HissyError>>
+	pub fun: Box<RefCell<dyn FnMut(Vec<Value>) -> Result<Value, HissyError>>>
 }
 
-impl Traceable for NativeFunction {
-	fn mark(&mut self) {}
-	fn unroot(&mut self) {}
+impl NativeFunction {
+	pub(crate) fn new(fun: impl FnMut(Vec<Value>) -> Result<Value, HissyError> + 'static) -> NativeFunction {
+		NativeFunction {
+			fun: Box::new(RefCell::new(fun)),
+		}
+	}
+	
+	pub fn call(&self, args: Vec<Value>) -> Result<Value, HissyError> {
+		self.fun.borrow_mut().deref_mut()(args)
+	}
 }
+
+impl Traceable for NativeFunction {}
 
 impl fmt::Debug for NativeFunction {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> fmt::Result {
 		write!(f, "<function>")
-	}
-}
-
-impl Deref for NativeFunction {
-	type Target = dyn FnMut(Vec<Value>) -> Result<Value, HissyError>;
-	fn deref(&self) -> &<Self as Deref>::Target {
-		&self.fun
-	}
-}
-
-impl DerefMut for NativeFunction {
-	fn deref_mut(&mut self) -> &mut <Self as Deref>::Target {
-		&mut self.fun
 	}
 }
 

@@ -1,4 +1,5 @@
 
+use std::cell::Cell;
 use std::fmt;
 use num_enum::TryFromPrimitive;
 use std::convert::TryFrom;
@@ -12,7 +13,7 @@ use super::gc::{GC, GCRef, GCWrapper};
 /// In the latter case, `Value` is the untyped equivalent of a [`GCRef`], and can be converted to/from one.
 /// 
 /// Internally, `Value`s are stored using NaN-tagging/boxing, so that non-object values are stored without heap allocation.
-pub struct Value(u64);
+pub struct Value(Cell<u64>);
 
 #[derive(TryFromPrimitive, PartialEq)]
 #[repr(u64)]
@@ -34,60 +35,64 @@ const fn base_value(t: ValueType) -> u64 {
 	TAG_MIN + ((t as u64) << TAG_POS)
 }
 
-pub const NIL:   Value = Value(base_value(ValueType::Nil));
-pub const FALSE: Value = Value(base_value(ValueType::Bool));
-pub const TRUE:  Value = Value(base_value(ValueType::Bool) | 1);
+pub const NIL:   Value = Value(Cell::new(base_value(ValueType::Nil)));
+pub const FALSE: Value = Value(Cell::new(base_value(ValueType::Bool)));
+pub const TRUE:  Value = Value(Cell::new(base_value(ValueType::Bool) | 1));
 
 impl Value {
+	fn from_value(val: u64) -> Value {
+		Value(Cell::new(val))
+	}
+	
 	pub(super) fn get_type(&self) -> ValueType {
-		if self.0 < TAG_MIN {
+		if self.0.get() < TAG_MIN {
 			ValueType::Real
 		} else {
-			ValueType::try_from((self.0 - TAG_MIN) >> TAG_POS).unwrap()
+			ValueType::try_from((self.0.get() - TAG_MIN) >> TAG_POS).unwrap()
 		}
 	}
 	
-	pub(super) fn from_pointer(pointer: *mut GCWrapper, root: bool) -> Value {
+	pub(super) fn from_pointer(pointer: *const GCWrapper, root: bool) -> Value {
 		let pointer = pointer as *mut () as u64; // Erases fat pointer data
 		assert!(pointer & DATA_MASK == pointer, "Object pointer has too many bits to fit in Value");
-		let new_val = Value(base_value(if root { ValueType::Root } else { ValueType::Ref }) + pointer);
+		let new_val = Value::from_value(base_value(if root { ValueType::Root } else { ValueType::Ref }) + pointer);
 		if root { new_val.get_pointer().unwrap().signal_root() }
 		new_val
 	}
 	
-	pub(super) fn get_pointer(&self) -> Option<&mut GCWrapper> {
+	pub(super) fn get_pointer(&self) -> Option<&GCWrapper> {
 		let t = self.get_type();
 		if t == ValueType::Root || t == ValueType::Ref {
-			let pointer = GCWrapper::fatten_pointer((self.0 & DATA_MASK) as *mut ());
+			let pointer = GCWrapper::fatten_pointer((self.0.get() & DATA_MASK) as *mut ());
 			// Safety: as long as the GC algorithm is well-behaved (it frees a reference
 			// before or in the same cycle as the referee), and the collecting process
 			// does not call this function, self.pointer will be valid.
-			unsafe { Some(&mut *pointer) }
+			unsafe { Some(&*pointer) }
 		} else {
 			None
 		}
 	}
 	
-	/// Marks the `Value` as no longer a root reference.
-	/// 
-	/// THIS SHOULD NEVER BE USED OUTSIDE OF [`Traceable::unroot`]!
-	/// 
-	/// [`Traceable::unroot`]: ../gc/trait.Traceable.html#tymethod.unroot
-	pub fn unroot(&mut self) {
+	fn unroot(&self) {
 		if self.get_type() == ValueType::Root {
-			self.0 = base_value(ValueType::Ref) + (self.0 & DATA_MASK);
+			self.0.set(base_value(ValueType::Ref) + (self.0.get() & DATA_MASK));
 			self.get_pointer().unwrap().signal_unroot();
 		}
 	}
 	
-	/// Recursively calls `Traceable::mark()` on subobjects.
+	/// Recursively calls `Traceable::touch()` on subobjects.
 	/// 
-	/// THIS SHOULD NEVER BE USED OUTSIDE OF [`Traceable::mark`]!
+	/// THIS SHOULD NEVER BE USED OUTSIDE OF [`Traceable::touch`]!
 	/// 
-	/// [`Traceable::mark`]: ../gc/trait.Traceable.html#tymethod.mark
-	pub fn mark(&self) {
-		if let Some(p) = self.get_pointer() {
-			p.mark()
+	/// [`Traceable::touch`]: ../gc/trait.Traceable.html#tymethod.touch
+	pub fn touch(&self, initial: bool) {
+		let t = self.get_type();
+		if t == ValueType::Root || t == ValueType::Ref {
+			if initial {
+				self.unroot();
+			} else {
+				self.get_pointer().unwrap().mark()
+			}
 		}
 	}
 	
@@ -123,7 +128,7 @@ impl fmt::Debug for Value {
 /// Converts a [`GCRef`] to a [`Value`], effectively erasing its type.
 impl<T: GC> From<GCRef<T>> for Value {
 	fn from(gc_ref: GCRef<T>) -> Value {
-		Value::from_pointer(gc_ref.pointer, gc_ref.root)
+		Value::from_pointer(gc_ref.pointer, gc_ref.root.get())
 	}
 }
 
@@ -152,7 +157,7 @@ impl Clone for Value {
 		if let Some(pointer) = self.get_pointer() {
 			Value::from_pointer(pointer, true)
 		} else {
-			Value(self.0)
+			Value::from_value(self.0.get())
 		}
 	}
 }
@@ -167,7 +172,7 @@ impl Drop for Value {
 /// Converts an `i32` into a `Value` directly (no heap allocation is performed).
 impl From<i32> for Value {
 	fn from(i: i32) -> Self {
-		Value(base_value(ValueType::Int) + (i as u32 as u64))
+		Value::from_value(base_value(ValueType::Int) + (i as u32 as u64))
 	}
 }
 
@@ -175,14 +180,14 @@ impl From<i32> for Value {
 impl From<f64> for Value {
 	fn from(d: f64) -> Self {
 		assert!(f64::to_bits(d) <= TAG_MIN, "Trying to fit 'fat' NaN into Value");
-		Value(f64::to_bits(d))
+		Value::from_value(f64::to_bits(d))
 	}
 }
 
 /// Converts a `bool` into a `Value` directly (no heap allocation is performed).
 impl From<bool> for Value {
 	fn from(b: bool) -> Self {
-		Value(base_value(ValueType::Bool) | (if b { 1 } else { 0 }))
+		Value::from_value(base_value(ValueType::Bool) | (if b { 1 } else { 0 }))
 	}
 }
 
@@ -191,8 +196,8 @@ impl TryFrom<&Value> for i32 {
 	type Error = &'static str;
 	fn try_from(value: &Value) -> std::result::Result<Self, &'static str> {
 		if value.get_type() == ValueType::Int {
-			assert!(value.0 & DATA_MASK <= std::u32::MAX as u64, "Invalid integer Value");
-			Ok((value.0 & DATA_MASK) as i32)
+			assert!(value.0.get() & DATA_MASK <= std::u32::MAX as u64, "Invalid integer Value");
+			Ok((value.0.get() & DATA_MASK) as i32)
 		} else {
 			Err("Value is not an integer")
 		}
@@ -204,7 +209,7 @@ impl TryFrom<&Value> for f64 {
 	type Error = &'static str;
 	fn try_from(value: &Value) -> std::result::Result<Self, &'static str> {
 		if value.get_type() == ValueType::Real {
-			Ok(f64::from_bits(value.0))
+			Ok(f64::from_bits(value.0.get()))
 		} else {
 			Err("Value is not a real")
 		}
@@ -216,8 +221,8 @@ impl TryFrom<&Value> for bool {
 	type Error = &'static str;
 	fn try_from(value: &Value) -> std::result::Result<Self, &'static str> {
 		if value.get_type() == ValueType::Bool {
-			assert!(value.0 & DATA_MASK <= 1, "Invalid boolean Value");
-			Ok(value.0 & 1 == 1)
+			assert!(value.0.get() & DATA_MASK <= 1, "Invalid boolean Value");
+			Ok(value.0.get() & 1 == 1)
 		} else {
 			Err("Value is not a boolean")
 		}

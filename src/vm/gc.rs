@@ -1,4 +1,5 @@
 
+use std::cell::Cell;
 use std::{ptr, mem, raw, fmt};
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -21,12 +22,9 @@ impl<T: Any> AsAny for T {
 
 /// This trait allows the GC to trace through objects in its heap.
 pub trait Traceable {
-	/// Should call .mark() on all direct GCRef/Value children of self.
-	/// This is used during garbage collection.
-	fn mark(&mut self);
-	/// Should call .unroot() on all direct GCRef/Value children of self.
-	/// This is used when placing an object in the GC heap, to remove all root references inside it.
-	fn unroot(&mut self);
+	/// Should call .touch(initial) on all direct GCRef/Value children of self.
+	/// This is used for garbage collection.
+	fn touch(&self, _initial: bool) {}
 }
 
 /// An auto-implemented trait with all the supertraits required for GC values.
@@ -39,8 +37,8 @@ impl<T: 'static + Traceable + AsAny + Debug> GC for T {}
 #[repr(C)]
 pub(super) struct GCWrapper_<T: ?Sized> {
 	vtable: *mut (),
-	marked: bool,
-	roots: u32,
+	marked: Cell<bool>,
+	roots: Cell<u32>,
 	data: T,
 }
 pub(super) type GCWrapper = GCWrapper_<dyn GC>;
@@ -54,8 +52,8 @@ impl GCWrapper {
 		let raw_object: raw::TraitObject = unsafe { mem::transmute(trait_object) };
 		Box::new(GCWrapper_ {
 			vtable: raw_object.vtable,
-			marked: false,
-			roots: 0,
+			marked: Cell::new(false),
+			roots: Cell::new(0),
 			data: value
 		})
 	}
@@ -64,7 +62,7 @@ impl GCWrapper {
 	///
 	/// Used in [`Value`], since a fat pointer doesn't fit into a `Value`
 	/// Possible since `GCWrapper` contains its object's VTable
-	pub fn fatten_pointer(data: *mut ()) -> *mut GCWrapper {
+	pub fn fatten_pointer(data: *mut ()) -> *const GCWrapper {
 		// Safety: "vtable" is stored at base of GCWrapper thanks to #[repr(C)],
 		// and raw::TraitObject layout should correspond to actual trait object layout
 		unsafe {
@@ -85,22 +83,26 @@ impl GCWrapper {
 		format!("{:?}", self)
 	}
 	
-	pub fn signal_root(&mut self) {
-		self.roots += 1;
+	pub fn signal_root(&self) {
+		self.roots.set(self.roots.get() + 1);
 	}
-	pub fn signal_unroot(&mut self) {
-		self.roots -= 1;
+	pub fn signal_unroot(&self) {
+		self.roots.set(self.roots.get() - 1);
 	}
 	
-	pub fn mark(&mut self) {
-		if !self.marked {
-			self.marked = true;
-			self.data.mark();
+	pub fn mark(&self) {
+		if !self.marked.get() {
+			self.marked.set(true);
+			self.data.touch(false);
 		}
 	}
 	
-	fn reset(&mut self) {
-		self.marked = false;
+	pub fn unroot_children(&self) {
+		self.data.touch(true);
+	}
+	
+	fn reset(&self) {
+		self.marked.set(false);
 	}
 }
 
@@ -119,16 +121,16 @@ impl Debug for GCWrapper {
 /// 
 /// [`Value`]: ../value/struct.Value.html
 pub struct GCRef<T: GC> {
-	pub(super) root: bool,
-	pub(super) pointer: *mut GCWrapper,
+	pub(super) root: Cell<bool>,
+	pub(super) pointer: *const GCWrapper,
 	phantom: PhantomData<T>,
 }
 
 impl<T: GC> GCRef<T> {
-	pub(super) fn from_pointer(pointer: *mut GCWrapper, root: bool) -> GCRef<T> {
-		let mut new_ref = GCRef { root, pointer, phantom: PhantomData::<T> };
+	pub(super) fn from_pointer(pointer: *const GCWrapper, root: bool) -> GCRef<T> {
+		let new_ref = GCRef { root: Cell::new(root), pointer, phantom: PhantomData::<T> };
 		assert!(new_ref.wrapper().is_a::<T>(), "Cannot make GCRef<T> to non-T Object");
-		if root { new_ref.wrapper_mut().signal_root(); }
+		if root { new_ref.wrapper().signal_root(); }
 		new_ref
 	}
 	
@@ -139,28 +141,26 @@ impl<T: GC> GCRef<T> {
 		unsafe { &*self.pointer }
 	}
 	
-	fn wrapper_mut(&mut self) -> &mut GCWrapper {
-		// Safety: as long as the GC algorithm is well-behaved (it frees a reference
-		// before or in the same cycle as the referee), and the collecting process
-		// does not call this function, self.pointer will be valid.
-		unsafe { &mut *self.pointer }
-	}
-	
-	/// Marks the `GCRef` as no longer a root reference.
-	/// 
-	/// THIS SHOULD NEVER BE USED OUTSIDE OF [`Traceable::unroot`]!
-	pub fn unroot(&mut self) {
-		if self.root {
-			self.root = false;
-			self.wrapper_mut().signal_unroot();
+	fn unroot(&self) {
+		if self.root.get() {
+			self.root.set(false);
+			self.wrapper().signal_unroot();
 		}
 	}
 	
-	/// Recursively calls `Traceable::mark` on subobjects.
+	fn mark(&self) {
+		self.wrapper().mark();
+	}
+	
+	/// Recursively calls `Traceable::touch` on subobjects.
 	/// 
-	/// THIS SHOULD NEVER BE USED OUTSIDE OF [`Traceable::mark`]!
-	pub fn mark(&mut self) {
-		self.wrapper_mut().mark();
+	/// THIS SHOULD NEVER BE USED OUTSIDE OF [`Traceable::touch`]!
+	pub fn touch(&self, initial: bool) {
+		if initial { // Unroot
+			self.unroot();
+		} else { // Mark subobjects
+			self.mark();
+		}
 	}
 }
 
@@ -208,9 +208,9 @@ impl GCHeap {
 		Default::default()
 	}
 	
-	fn add<T: GC>(&mut self, v: T) -> &mut GCWrapper {
-		let mut wrapper = GCWrapper::new_boxed(v);
-		wrapper.data.unroot();
+	fn add<T: GC>(&mut self, v: T) -> &GCWrapper {
+		let wrapper = GCWrapper::new_boxed(v);
+		wrapper.unroot_children(); // Unroot children
 		self.objects.push(wrapper);
 		self.objects.last_mut().unwrap()
 	}
@@ -229,12 +229,12 @@ impl GCHeap {
 	/// This uses [`Traceable.mark`] to determine all live objects.
 	pub fn collect(&mut self) {
 		for wrapper in self.objects.iter_mut() {
-			if wrapper.roots > 0 {
+			if wrapper.roots.get() > 0 {
 				wrapper.mark();
 			}
 		}
 		
-		self.objects.retain(|wrapper| wrapper.marked);
+		self.objects.retain(|wrapper| wrapper.marked.get());
 		
 		for wrapper in self.objects.iter_mut() {
 			wrapper.reset();
@@ -245,7 +245,7 @@ impl GCHeap {
 	pub fn inspect(&self) {
 		println!("== GC inspect ==");
 		for wrapper in self.objects.iter() {
-			println!("{}: {} roots", wrapper.debug(), wrapper.roots);
+			println!("{}: {} roots", wrapper.debug(), wrapper.roots.get());
 		}
 	}
 	
