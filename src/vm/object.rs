@@ -1,8 +1,9 @@
 
 use std::cell::RefCell;
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 use std::fmt;
 
+use crate::HissyError;
 use super::value::Value;
 use super::gc::{Traceable, GC, GCRef};
 
@@ -100,7 +101,36 @@ impl Traceable for Closure {
 
 impl fmt::Debug for Closure {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "<closure>")
+		write!(f, "<function>")
+	}
+}
+
+
+pub struct NativeFunction {
+	pub fun: Box<dyn FnMut(Vec<Value>) -> Result<Value, HissyError>>
+}
+
+impl Traceable for NativeFunction {
+	fn mark(&mut self) {}
+	fn unroot(&mut self) {}
+}
+
+impl fmt::Debug for NativeFunction {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "<function>")
+	}
+}
+
+impl Deref for NativeFunction {
+	type Target = dyn FnMut(Vec<Value>) -> Result<Value, HissyError>;
+	fn deref(&self) -> &<Self as Deref>::Target {
+		&self.fun
+	}
+}
+
+impl DerefMut for NativeFunction {
+	fn deref_mut(&mut self) -> &mut <Self as Deref>::Target {
+		&mut self.fun
 	}
 }
 

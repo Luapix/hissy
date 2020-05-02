@@ -211,6 +211,28 @@ impl Context {
 	fn leave(&mut self) {
 		self.stack.pop().expect("Cannot leave main chunk");
 	}
+	
+	fn get_binding(&mut self, id: &str) -> Result<Option<Binding>, HissyError> {
+		// Find a binding (local or known upvalue) in current chunk, otherwise...
+		if let Some(binding) = self.find_chunk_binding(id) {
+			Ok(Some(binding))
+		} else {
+			// Look for a binding in surrounding chunks, and if found...
+			let binding = self.stack.iter().enumerate().rev().skip(1).find_map(|(i, ctx)| {
+				ctx.find_chunk_binding(id).map(|b| (i, b))
+			});
+			if let Some((i, mut binding)) = binding {
+				// Set it as an upvalue in all inner chunks successively.
+				for ctx in self.stack[i+1..].iter_mut() {
+					let upv = ctx.make_upvalue(id.to_string(), binding.encoded())?;
+					binding = Binding::Upvalue(upv);
+				}
+				Ok(Some(binding))
+			} else {
+				Ok(None)
+			}
+		}
+	}
 }
 
 impl Deref for Context {
@@ -280,28 +302,6 @@ impl Compiler {
 		Compiler { debug_info, ctx: Context::new(), chunk: ChunkManager::new() }
 	}
 	
-	fn get_binding(&mut self, id: &str) -> Result<Option<Binding>, HissyError> {
-		// Find a binding (local or known upvalue) in current chunk, otherwise...
-		if let Some(binding) = self.ctx.find_chunk_binding(id) {
-			Ok(Some(binding))
-		} else {
-			// Look for a binding in surrounding chunks, and if found...
-			let binding = self.ctx.stack.iter().enumerate().rev().skip(1).find_map(|(i, ctx)| {
-				ctx.find_chunk_binding(id).map(|b| (i, b))
-			});
-			if let Some((i, mut binding)) = binding {
-				// Set it as an upvalue in all inner chunks successively.
-				for ctx in self.ctx.stack[i+1..].iter_mut() {
-					let upv = ctx.make_upvalue(id.to_string(), binding.encoded())?;
-					binding = Binding::Upvalue(upv);
-				}
-				Ok(Some(binding))
-			} else {
-				Ok(None)
-			}
-		}
-	}
-	
 	// Emits register to chunk; dest if Some, else new_reg()
 	fn emit_reg(&mut self, dest: Option<u8>) -> Result<u8, HissyError> {
 		let reg = dest.map_or_else(|| self.ctx.regs.new_reg(), Ok)?;
@@ -327,7 +327,7 @@ impl Compiler {
 			Expr::String(s) => 
 				self.chunk.compile_constant(ChunkConstant::String(s))?,
 			Expr::Id(s) => {
-				let binding = self.get_binding(&s)?
+				let binding = self.ctx.get_binding(&s)?
 					.ok_or_else(|| error(format!("Referencing undefined binding '{}'", s)))?;
 				match binding {
 					Binding::Local(reg) => reg,
@@ -445,7 +445,7 @@ impl Compiler {
 						self.ctx.make_local(id, reg);
 					},
 					Stat::Set(id, e) => {
-						let binding = self.get_binding(&id)?
+						let binding = self.ctx.get_binding(&id)?
 							.ok_or_else(|| error(format!("Referencing undefined binding '{}'", id)))?;
 						match binding {
 							Binding::Local(reg) => {
@@ -553,12 +553,12 @@ impl Compiler {
 
 	fn compile_chunk(&mut self, name: String, ast: Block, args: Vec<String>) -> Result<u8, HissyError> {
 		let chunk_id = self.chunk.enter();
+		self.ctx.enter();
 		
 		if self.debug_info {
 			self.chunk.debug_info.name = name;
 		}
 		
-		self.ctx.enter();
 		self.ctx.enter_block();
 		for id in args {
 			let reg = self.ctx.regs.new_reg()?;
@@ -572,6 +572,7 @@ impl Compiler {
 		if self.debug_info {
 			self.chunk.debug_info.upvalue_names = self.ctx.upvalues.iter().map(|b| b.name.clone()).collect();
 		}
+		
 		self.ctx.leave();
 		self.chunk.leave();
 		
@@ -581,7 +582,9 @@ impl Compiler {
 	/// Compiles a string slice containing Hissy code into a [`Program`], consuming the `Compiler`.
 	pub fn compile_program(mut self, input: &str) -> Result<Program, HissyError> {
 		let ast = parse(input)?;
+		
 		self.compile_chunk(String::from("<main>"), ast, Vec::new())?;
+		
 		Ok(Program { debug_info: self.debug_info, chunks: self.chunk.finish() })
 	}
 }
