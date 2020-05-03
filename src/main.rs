@@ -1,10 +1,9 @@
-extern crate docopt;
 
+use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Debug};
 use std::fs::read_to_string;
 use std::path::{Path, PathBuf};
-
-use docopt::Docopt;
+use std::env;
 
 use hissy_lib::{HissyError, ErrorType};
 use hissy_lib::parser;
@@ -20,6 +19,7 @@ fn error_str(s: &str) -> HissyError {
 	error(String::from(s))
 }
 
+const RED: &str = "\u{001b}[31;1m";
 const GREEN: &str = "\u{001b}[32;1m";
 const RESET: &str = "\u{001b}[0m";
 
@@ -91,17 +91,16 @@ fn run(file: &str) -> Result<(), HissyError> {
 
 const USAGE: &str = "
 Usage:
-  hissy interpret <code>
-  hissy run <bytecode>
-  hissy compile [--strip] [-o <bytecode>] <code>
-  hissy (lex|parse) <code>
+  hissy lex|parse <src>
+  hissy compile [--strip] [-o <bytecode>] <src>
   hissy list <bytecode>
-  hissy --help
-  hissy --version
+  hissy run <bytecode>
+  hissy interpret <src>
+  hissy --help|--version
 
 Arguments:
-  <code>       A Hissy source file (usually .hsy)
-  <bytecode>   A Hissy bytecode file (usually .hsyc)
+  <src>        Path to a Hissy source file (usually .hsy)
+  <bytecode>   Path to a Hissy bytecode file (usually .hsyc)
 
 Options:
   --strip      Strip debug symbols from output
@@ -110,34 +109,96 @@ Options:
   --version    Print the version
 ";
 
-fn get_arg_option(args: &docopt::ArgvMap, key: &str) -> Option<String> {
-	if args.get_bool(key) {
-		Some(args.get_str(key).to_string())
-	} else {
-		None
+struct CommandSpec {
+	name: &'static str,
+	takes_file: bool,
+	parameters: &'static [&'static str],
+	options: &'static [&'static str]
+}
+impl CommandSpec {
+	const fn new(name: &'static str, takes_file: bool, parameters: &'static [&'static str], options: &'static [&'static str]) -> CommandSpec {
+		CommandSpec { name, takes_file, parameters, options }
 	}
 }
 
-fn main() {
-	let args = Docopt::new(USAGE)
-		.and_then(|d| d.parse())
-		.unwrap_or_else(|e| e.exit());
+const COMMANDS: &[CommandSpec] = &[
+	CommandSpec::new("lex", true, &[], &[]),
+	CommandSpec::new("parse", true, &[], &[]),
+	CommandSpec::new("compile", true, &["-o"], &["--strip"]),
+	CommandSpec::new("list", true, &[], &[]),
+	CommandSpec::new("run", true, &[], &[]),
+	CommandSpec::new("interpret", true, &[], &[]),
+	CommandSpec::new("--version", false, &[], &[]),
+	CommandSpec::new("--help", false, &[], &[]),
+];
+
+struct Command {
+	name: &'static str,
+	file: Option<String>,
+	parameters: HashMap<&'static str, String>,
+	options: HashSet<&'static str>
+}
+
+
+fn parse_args(mut args: env::Args) -> Result<Command, String> {
+	let _hissy_path = args.next().unwrap();
 	
-	if args.get_bool("lex") {
-		display_result(lex(args.get_str("<code>")));
-	} else if args.get_bool("parse") {
-		debug_result(parse(args.get_str("<code>")));
-	} else if args.get_bool("compile") {
-		display_result(compile(args.get_str("<code>"), get_arg_option(&args, "<bytecode>"), !args.get_bool("--strip")));
-	} else if args.get_bool("list") {
-		display_error(list(args.get_str("<bytecode>")));
-	} else if args.get_bool("interpret") {
-		display_error(interpret(args.get_str("<code>")));
-	} else if args.get_bool("run") {
-		display_error(run(args.get_str("<bytecode>")));
-	} else if args.get_bool("--version") {
-		println!("Hissy v{}", env!("CARGO_PKG_VERSION"));
-	} else {
-		panic!("Unimplemented command");
+	let cmd_name = args.next().filter(|cmd| !cmd.starts_with("-"))
+		.ok_or(String::from("Expected command name"))?;
+	let cmd_spec = COMMANDS.iter().find(|cmd| cmd.name == cmd_name)
+		.ok_or_else(|| format!("Unknown command '{}'", cmd_name))?;
+	let mut cmd = Command {
+		name: cmd_spec.name,
+		file: None,
+		parameters: HashMap::new(),
+		options: HashSet::new(),
+	};
+	
+	let mut positional = vec![];
+	while let Some(part) = args.next() {
+		if part.starts_with("-") {
+			if let Some(opt_spec) = cmd_spec.options.iter().find(|opt| *opt == &part) {
+				cmd.options.insert(opt_spec);
+			} else if let Some(param_spec) = cmd_spec.parameters.iter().find(|opt| *opt == &part) {
+				cmd.parameters.insert(param_spec, args.next()
+					.ok_or_else(|| format!("Option '{}' expects a parameter", param_spec))?);
+			} else {
+				return Err(format!("Unknown option '{}' for command '{}'", part, cmd.name));
+			}
+		} else {
+			positional.push(part);
+		}
+	}
+	
+	let exp_positional = if cmd_spec.takes_file { 1 } else { 0 };
+	if positional.len() != exp_positional {
+		return Err(format!("Expected exactly {} positional arguments for command '{}'", exp_positional, cmd.name));
+	}
+	if cmd_spec.takes_file {
+		cmd.file = Some(positional.first().unwrap().clone());
+	}
+	
+	Ok(cmd)
+}
+
+fn main() {
+	let args = env::args();
+	match parse_args(args) {
+		Ok(cmd) => {
+			match cmd.name {
+				"lex" => display_result(lex(&cmd.file.unwrap())),
+				"parse" => debug_result(parse(&cmd.file.unwrap())),
+				"compile" => display_result(compile(&cmd.file.unwrap(), cmd.parameters.get("-o").cloned(), cmd.options.contains("-o"))),
+				"list" => display_error(list(&cmd.file.unwrap())),
+				"interpret" => display_error(interpret(&cmd.file.unwrap())),
+				"run" => display_error(run(&cmd.file.unwrap())),
+				"--version" => println!("Hissy v{}", env!("CARGO_PKG_VERSION")),
+				"--help" => println!("{}", USAGE),
+				_ => panic!("Unimplemented command"),
+			}
+		},
+		Err(err) => {
+			eprintln!("{}{}{}\n{}", RED, err, RESET, USAGE);
+		}
 	}
 }
