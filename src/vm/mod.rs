@@ -127,8 +127,8 @@ impl Registers {
 		self.registers.resize(self.registers.len() + usize::from(n), NIL);
 	}
 	
-	pub fn free(&mut self, n: u16) {
-		self.registers.resize(self.registers.len() - usize::from(n), NIL);
+	pub fn free_all(&mut self) {
+		self.registers.clear();
 	}
 	
 	pub fn reg_or_cst(&self, chunk: &Chunk, heap: &mut GCHeap, reg: u8) -> Result<ValueRef, HissyError> {
@@ -250,8 +250,6 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) -> Result<(), HissyErro
 	
 	let main = heap.make_ref(Closure::new(0, vec![]));
 	vm.call(program, main, 0, None);
-	
-	let mut counter = 0;
 	
 	macro_rules! bin_op {
 		($method:ident) => {{
@@ -423,14 +421,10 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) -> Result<(), HissyErro
 			break;
 		}
 		
-		counter += 1;
-		if counter % 100 == 0 {
-			heap.collect();
-			// heap.inspect();
-		}
+		heap.step();
 	}
 	
-	vm.regs.free(vm.chunk.nb_registers);
+	vm.regs.free_all();
 	heap.collect();
 	
 	Ok(())

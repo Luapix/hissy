@@ -1,4 +1,5 @@
 
+use std::pin::Pin;
 use std::cell::Cell;
 use std::{ptr, mem, raw, fmt};
 use std::fmt::Debug;
@@ -46,11 +47,11 @@ pub(super) type GCWrapper = GCWrapper_<dyn GC>;
 // because of Rust's still partial support for custom DSTs.
 
 impl GCWrapper {
-	fn new_boxed<T: GC>(mut value: T) -> Box<GCWrapper> {
+	fn new_pinned<T: GC>(mut value: T) -> Pin<Box<GCWrapper>> {
 		let trait_object: &mut dyn GC = &mut value;
 		// Safety: raw::TraitObject layout should correspond to actual trait object layout
 		let raw_object: raw::TraitObject = unsafe { mem::transmute(trait_object) };
-		Box::new(GCWrapper_ {
+		Box::pin(GCWrapper_ {
 			vtable: raw_object.vtable,
 			marked: Cell::new(false),
 			roots: Cell::new(0),
@@ -81,6 +82,10 @@ impl GCWrapper {
 	
 	pub fn debug(&self) -> String {
 		format!("{:?}", self)
+	}
+	
+	fn size(&self) -> usize {
+		mem::size_of_val(&self) + mem::size_of_val(&self.data)
 	}
 	
 	pub fn signal_root(&self) {
@@ -194,22 +199,30 @@ impl<T: GC> Debug for GCRef<T> {
 }
 
 
+const INIT_THRESHOLD: usize = 64;
+
 /// Object maintaining all GC state.
 /// 
 /// Usually, only one should be created.
-#[derive(Default)]
 pub struct GCHeap {
-	objects: Vec<Box<GCWrapper>>,
+	objects: Vec<Pin<Box<GCWrapper>>>,
+	threshold: usize,
+	used: usize,
 }
 
 impl GCHeap {
 	/// Create a new, empty GC heap.
-	pub fn new() -> Self {
-		Default::default()
+	pub fn new() -> GCHeap {
+		GCHeap {
+			objects: vec![],
+			threshold: INIT_THRESHOLD,
+			used: 0,
+		}
 	}
 	
 	fn add<T: GC>(&mut self, v: T) -> &GCWrapper {
-		let wrapper = GCWrapper::new_boxed(v);
+		let wrapper = GCWrapper::new_pinned(v);
+		self.used += wrapper.size();
 		wrapper.unroot_children(); // Unroot children
 		self.objects.push(wrapper);
 		self.objects.last_mut().unwrap()
@@ -226,7 +239,7 @@ impl GCHeap {
 	
 	/// Delete dead objects from heap.
 	/// 
-	/// This uses [`Traceable.mark`] to determine all live objects.
+	/// This uses [`Traceable.touch`] to determine all live objects.
 	pub fn collect(&mut self) {
 		for wrapper in self.objects.iter_mut() {
 			if wrapper.roots.get() > 0 {
@@ -236,25 +249,37 @@ impl GCHeap {
 		
 		self.objects.retain(|wrapper| wrapper.marked.get());
 		
+		self.used = 0;
 		for wrapper in self.objects.iter_mut() {
 			wrapper.reset();
+			self.used += wrapper.size();
+		}
+	}
+	
+	/// Calls collect() if the used memory is past a threshold.
+	/// 
+	/// The threshold is set to some initial value, and will be set to double
+	/// the current usage at the end of any collection initiated by this function.
+	pub fn step(&mut self) {
+		if self.used >= self.threshold {
+			self.collect();
+			self.threshold = self.used * 2;
 		}
 	}
 	
 	/// Inspect current heap contents. Prints to standard output.
 	pub fn inspect(&self) {
-		println!("== GC inspect ==");
+		println!("[GC inspect] ({}B used, collect at {}B)", self.used, self.threshold);
 		for wrapper in self.objects.iter() {
 			println!("{}: {} roots", wrapper.debug(), wrapper.roots.get());
 		}
 	}
 	
-	/// Returns the number of (live or not) objects in the heap.
-	pub fn size(&self) -> usize {
-		self.objects.len()
+	/// Returns the total number of bytes stored in the GC heap.
+	pub fn used_memory(&self) -> usize {
+		self.used
 	}
 	
-	/// Returns whether the heap is empty (dead but not yet collected objects included).
 	pub fn is_empty(&self) -> bool {
 		self.objects.is_empty()
 	}
@@ -269,7 +294,7 @@ impl Drop for GCHeap {
 	fn drop(&mut self) {
 		self.collect();
 		if !self.is_empty() {
-			eprintln!("GC heap could not collect all objects!");
+			eprintln!("GC heap could not collect all objects before being dropped; references will be left dangling!");
 		}
 	}
 }
