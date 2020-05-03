@@ -143,7 +143,7 @@ struct Command {
 fn parse_args(mut args: env::Args) -> Result<Command, String> {
 	let _hissy_path = args.next().unwrap();
 	
-	let cmd_name = args.next().filter(|cmd| !cmd.starts_with("-"))
+	let cmd_name = args.next()
 		.ok_or(String::from("Expected command name"))?;
 	let cmd_spec = COMMANDS.iter().find(|cmd| cmd.name == cmd_name)
 		.ok_or_else(|| format!("Unknown command '{}'", cmd_name))?;
