@@ -87,8 +87,10 @@ impl fmt::Debug for Closure {
 }
 
 
+pub type HissyFun = dyn FnMut(Vec<Value>) -> Result<Value, HissyError>;
+
 pub struct NativeFunction {
-	pub fun: Box<RefCell<dyn FnMut(Vec<Value>) -> Result<Value, HissyError>>>
+	pub fun: Box<RefCell<HissyFun>>
 }
 
 impl NativeFunction {

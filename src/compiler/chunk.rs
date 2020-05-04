@@ -6,7 +6,7 @@ use std::fs;
 use std::slice;
 
 use crate::{HissyError, ErrorType};
-use crate::vm::{MAX_REGISTERS, InstrType, InstrType::*, value::{NIL, TRUE, FALSE, Value}, gc::GCHeap};
+use crate::vm::{MAX_REGISTERS, InstrType, InstrType::*, value::{NIL, Value}, gc::GCHeap};
 use crate::serial::*;
 
 
@@ -41,7 +41,7 @@ impl ChunkConstant {
 	pub fn to_value(&self, heap: &mut GCHeap) -> Value {
 		match self {
 			ChunkConstant::Nil => NIL,
-			ChunkConstant::Bool(b) => if *b { TRUE } else { FALSE },
+			ChunkConstant::Bool(b) => Value::from(*b),
 			ChunkConstant::Int(i) => Value::from(*i),
 			ChunkConstant::Real(r) => Value::from(*r),
 			ChunkConstant::String(s) => heap.make_value(s.clone()),

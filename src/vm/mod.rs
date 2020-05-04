@@ -341,7 +341,7 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) -> Result<(), HissyErro
 						} else if let Ok(func) = GCRef::<NativeFunction>::try_from(func.clone()) {
 							let args_start_abs = vm.regs.window_start + (args_start as usize);
 							let args: &[Value] = &vm.regs.registers[args_start_abs..args_start_abs + (args_cnt as usize)];
-							let res = func.call(args.iter().cloned().collect())?;
+							let res = func.call(args.to_vec())?;
 							*vm.regs.mut_reg(rout) = res;
 						} else {
 							return Err(error(format!("Cannot call value {}", func.repr())));
@@ -410,7 +410,7 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) -> Result<(), HissyErro
 			if let Err(HissyError(ErrorType::Execution, err, 0)) = stop {
 				let line_numbers = &vm.chunk.debug_info.line_numbers;
 				let line_idx = line_numbers.iter().position(|(pos2, _)| instr_pos < *pos2)
-					.unwrap_or(line_numbers.len()) - 1;
+					.unwrap_or_else(|| line_numbers.len()) - 1;
 				let line = line_numbers.get(line_idx)
 					.expect("Could not get line number of instruction").1;
 				stop = Err(HissyError(ErrorType::Execution, err, line));

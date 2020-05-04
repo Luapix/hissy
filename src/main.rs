@@ -144,7 +144,7 @@ fn parse_args(mut args: env::Args) -> Result<Command, String> {
 	let _hissy_path = args.next().unwrap();
 	
 	let cmd_name = args.next()
-		.ok_or(String::from("Expected command name"))?;
+		.ok_or_else(|| String::from("Expected command name"))?;
 	let cmd_spec = COMMANDS.iter().find(|cmd| cmd.name == cmd_name)
 		.ok_or_else(|| format!("Unknown command '{}'", cmd_name))?;
 	let mut cmd = Command {
@@ -156,7 +156,7 @@ fn parse_args(mut args: env::Args) -> Result<Command, String> {
 	
 	let mut positional = vec![];
 	while let Some(part) = args.next() {
-		if part.starts_with("-") {
+		if part.starts_with('-') {
 			if let Some(opt_spec) = cmd_spec.options.iter().find(|opt| *opt == &part) {
 				cmd.options.insert(opt_spec);
 			} else if let Some(param_spec) = cmd_spec.parameters.iter().find(|opt| *opt == &part) {

@@ -18,7 +18,7 @@ pub fn create(heap: &mut GCHeap) -> Vec<Value> {
 					print!(" {}", val.repr());
 				}
 			}
-			print!("\n");
+			println!();
 			Ok(NIL)
 		})
 	));

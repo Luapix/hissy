@@ -35,12 +35,12 @@ const fn base_value(t: ValueType) -> u64 {
 	TAG_MIN + ((t as u64) << TAG_POS)
 }
 
-pub const NIL:   Value = Value(Cell::new(base_value(ValueType::Nil)));
-pub const FALSE: Value = Value(Cell::new(base_value(ValueType::Bool)));
-pub const TRUE:  Value = Value(Cell::new(base_value(ValueType::Bool) | 1));
+// A primitive (non-object value) will never have its interior mutated
+#[allow(clippy::declare_interior_mutable_const)]
+pub const NIL: Value = Value::from_value(base_value(ValueType::Nil));
 
 impl Value {
-	fn from_value(val: u64) -> Value {
+	const fn from_value(val: u64) -> Value {
 		Value(Cell::new(val))
 	}
 	

@@ -204,6 +204,7 @@ const INIT_THRESHOLD: usize = 64;
 /// Object maintaining all GC state.
 /// 
 /// Usually, only one should be created.
+#[derive(Default)]
 pub struct GCHeap {
 	objects: Vec<Pin<Box<GCWrapper>>>,
 	threshold: usize,
