@@ -415,6 +415,38 @@ impl Compiler {
 				needs_copy = false;
 				self.emit_reg(dest)?
 			},
+			Expr::List(mut values) => {
+				self.chunk.emit_instr(InstrType::ListNew);
+				needs_copy = false;
+				let reg = self.emit_reg(dest)?;
+				
+				if !values.is_empty() {
+					let n = u8::try_from(values.len()).map_err(|_| error_str("Too many values in list"))?;
+					let val_range = self.ctx.regs.new_reg_range(n)?;
+					for (i, val) in values.drain(..).enumerate() {
+						let rout = u8::try_from(usize::from(val_range) + i).unwrap();
+						self.compile_expr(val, Some(rout), None)?;
+					}
+					self.ctx.regs.free_temp_range(val_range, n);
+					self.chunk.emit_instr(InstrType::ListExtend);
+					self.chunk.emit_byte(reg);
+					self.chunk.emit_byte(val_range);
+					self.chunk.emit_byte(n);
+				}
+				
+				reg
+			},
+			Expr::Index(list, index) => {
+				let list = self.compile_expr(*list, None, None)?;
+				let index = self.compile_expr(*index, None, None)?;
+				self.ctx.regs.free_temp_reg(list);
+				self.ctx.regs.free_temp_reg(index);
+				self.chunk.emit_instr(InstrType::ListGet);
+				self.chunk.emit_byte(list);
+				self.chunk.emit_byte(index);
+				needs_copy = false;
+				self.emit_reg(dest)?
+			},
 			#[allow(unreachable_patterns)]
 			_ => unimplemented!("Unimplemented expression type: {:?}", expr),
 		};

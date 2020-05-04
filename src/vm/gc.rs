@@ -10,6 +10,10 @@ use std::ops::Deref;
 use super::value::Value;
 
 
+const RED: &str = "\u{001b}[31;1m";
+const RESET: &str = "\u{001b}[0m";
+
+
 /// An auto-implemented trait to allow easier access to Any methods.
 pub trait AsAny {
 	fn as_any(&self) -> &dyn Any;
@@ -295,7 +299,7 @@ impl Drop for GCHeap {
 	fn drop(&mut self) {
 		self.collect();
 		if !self.is_empty() {
-			eprintln!("GC heap could not collect all objects before being dropped; references will be left dangling!");
+			eprintln!("{}GC heap was dropped with remaining references to it{}", RED, RESET);
 		}
 	}
 }

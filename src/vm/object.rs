@@ -3,9 +3,15 @@ use std::cell::RefCell;
 use std::ops::{Deref, DerefMut};
 use std::fmt;
 
-use crate::HissyError;
+use crate::{HissyError, ErrorType};
 use super::value::Value;
 use super::gc::{Traceable, GC, GCRef};
+
+
+fn error(s: String) -> HissyError {
+	HissyError(ErrorType::Execution, s, 0)
+}
+
 
 impl Traceable for String {}
 
@@ -50,7 +56,9 @@ impl Upvalue {
 
 impl Traceable for Upvalue {
 	fn touch(&self, initial: bool) {
-		if let UpvalueData::OnHeap(val) = self.0.borrow().deref() { val.touch(initial); }
+		if let UpvalueData::OnHeap(val) = self.0.borrow().deref() {
+			val.touch(initial);
+		}
 	}
 }
 
@@ -77,7 +85,9 @@ impl Closure {
 }
 
 impl Traceable for Closure {
-	fn touch(&self, initial: bool) { self.upvalues.touch(initial); }
+	fn touch(&self, initial: bool) {
+		self.upvalues.touch(initial);
+	}
 }
 
 impl fmt::Debug for Closure {
@@ -110,6 +120,63 @@ impl Traceable for NativeFunction {}
 impl fmt::Debug for NativeFunction {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> fmt::Result {
 		write!(f, "<function>")
+	}
+}
+
+
+#[derive(Default)]
+pub struct List {
+	data: RefCell<Vec<Value>>
+}
+
+impl List {
+	pub fn new() -> List {
+		List::default()
+	}
+	
+	pub fn len(&self) -> usize {
+		self.data.borrow().len()
+	}
+	
+	pub fn extend(&self, values: &[Value]) {
+		let mut data = self.data.borrow_mut();
+		let start = data.len();
+		data.extend(values.iter().cloned());
+		for i in start..data.len() {
+			data[i].touch(true);
+		}
+	}
+	
+	pub fn get(&self, idx: usize) -> Result<Value, HissyError> {
+		self.data.borrow().get(idx).cloned()
+			.ok_or_else(|| error(format!("Can't get value at index {} in list of length {}", idx, self.len())))
+	}
+	
+	pub fn set(&self, idx: usize, val: Value) -> Result<(), HissyError> {
+		let mut data = self.data.borrow_mut();
+		let val2 = data.get_mut(idx)
+			.ok_or_else(|| error(format!("Can't set value at index {} in list of length {}", idx, self.len())))?;
+		*val2 = val;
+		Ok(())
+	}
+}
+
+impl Traceable for List {
+	fn touch(&self, initial: bool) {
+		self.data.borrow().touch(initial);
+	}
+}
+
+impl fmt::Debug for List {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "[")?;
+		for (i, val) in self.data.borrow().iter().enumerate() {
+			write!(f, "{}", val.repr())?;
+			if i != self.len()-1 {
+				write!(f, ", ")?;
+			}
+		}
+		write!(f, "]")
 	}
 }
 

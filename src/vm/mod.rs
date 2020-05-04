@@ -47,7 +47,7 @@ use crate::compiler::chunk::{Chunk, Program};
 
 use gc::{GCHeap, GCRef};
 use value::{Value, NIL};
-use object::{Upvalue, UpvalueData, Closure, NativeFunction};
+use object::{Upvalue, UpvalueData, Closure, NativeFunction, List};
 
 
 pub(crate) const MAX_REGISTERS: u8 = 128;
@@ -69,6 +69,7 @@ pub(crate) enum InstrType {
 	Not, Or, And,
 	Eq, Neq, Lth, Leq, Gth, Geq,
 	Func, Call, Ret,
+	ListNew, ListExtend, ListGet, ListSet,
 	Jmp, Jit, Jif,
 }
 
@@ -133,7 +134,7 @@ impl Registers {
 	
 	pub fn reg_or_cst(&self, chunk: &Chunk, heap: &mut GCHeap, reg: u8) -> Result<ValueRef, HissyError> {
 		if reg < MAX_REGISTERS {
-			let reg2 = self.window_start + usize::from(reg);
+			let reg2 = self.window_start + (reg as usize);
 			self.registers.get(reg2).ok_or_else(|| error_str("Invalid register")).map(ValueRef::Reg)
 		} else {
 			let cst_idx = usize::try_from(reg - MAX_REGISTERS).unwrap();
@@ -145,6 +146,11 @@ impl Registers {
 	pub fn mut_reg(&mut self, reg: u8) -> &mut Value {
 		let reg2 = self.window_start + usize::from(reg);
 		self.registers.get_mut(reg2).expect("Invalid register")
+	}
+	
+	pub fn reg_range(&self, start: u8, cnt: u8) -> &[Value] {
+		let start_abs = self.window_start + (start as usize);
+		&self.registers[start_abs .. start_abs + (cnt as usize)]
 	}
 	
 	pub fn get_upvalue(&self, upv: GCRef<Upvalue>) -> Value {
@@ -339,8 +345,7 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) -> Result<(), HissyErro
 						if let Ok(func) = GCRef::<Closure>::try_from(func.clone()) {
 							vm.call(program, func, args_start, Some(rout));
 						} else if let Ok(func) = GCRef::<NativeFunction>::try_from(func.clone()) {
-							let args_start_abs = vm.regs.window_start + (args_start as usize);
-							let args: &[Value] = &vm.regs.registers[args_start_abs..args_start_abs + (args_cnt as usize)];
+							let args = vm.regs.reg_range(args_start, args_cnt);
 							let res = func.call(args.to_vec())?;
 							*vm.regs.mut_reg(rout) = res;
 						} else {
@@ -393,6 +398,31 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) -> Result<(), HissyErro
 						*vm.regs.mut_reg(rout) = vm.external.get(ext_idx as usize)
 							.ok_or_else(|| error_str("Invalid external value"))?.clone();
 					},
+					InstrType::ListNew => {
+						let rout = read_u8(&mut vm.it)?;
+						*vm.regs.mut_reg(rout) = heap.make_value(List::new());
+					},
+					InstrType::ListExtend => {
+						let list = read_u8(&mut vm.it)?;
+						let vals_start = read_u8(&mut vm.it)?;
+						let vals_cnt = read_u8(&mut vm.it)?;
+						let list = GCRef::<List>::try_from(vm.regs.reg_or_cst(vm.chunk, heap, list)?.deref().clone())
+							.map_err(|_| error_str("Cannot use ListExtend on non-List value"))?;
+						let vals = vm.regs.reg_range(vals_start, vals_cnt);
+						list.extend(vals);
+					},
+					InstrType::ListGet => {
+						let list = read_u8(&mut vm.it)?;
+						let index = read_u8(&mut vm.it)?;
+						let rout = read_u8(&mut vm.it)?;
+						let list = GCRef::<List>::try_from(vm.regs.reg_or_cst(vm.chunk, heap, list)?.deref().clone())
+							.map_err(|_| error_str("Cannot index non-list value"))?;
+						let index = i32::try_from(vm.regs.reg_or_cst(vm.chunk, heap, index)?.deref())
+							.map_err(|_| error_str("Cannot index list with non-integer"))?;
+						let index = usize::try_from(index)
+							.map_err(|_| error_str("Cannot index list with negative integer"))?;
+						*vm.regs.mut_reg(rout) = list.get(index)?;
+					}
 					#[allow(unreachable_patterns)]
 					i => unimplemented!("Unimplemented instruction: {:?}", i)
 				}

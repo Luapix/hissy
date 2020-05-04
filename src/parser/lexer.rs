@@ -1,6 +1,7 @@
 
 use std::str::CharIndices;
-use std::iter::Peekable;
+use std::iter::{Peekable, FromIterator};
+use std::ops::Deref;
 use std::fmt;
 use unicode_xid::UnicodeXID;
 use peg::{Parse, ParseElem, ParseLiteral, ParseSlice, RuleResult, str::LineCol};
@@ -83,14 +84,10 @@ fn parse_symbol(it: &mut Peekable<CharIndices>, c: char) -> Option<SymbolStr> {
 	it.next(); // it has to be part of a symbol, consume c.
 	
 	if start {
-		let pair = it.peek().map(|(_,c2)| {
-			let mut s = SmallString::from(c);
-			s.push(*c2);
-			s
-		});
-		if pair.as_ref().map_or(false, |p| COMPLEX_SYMBOLS.contains(&p.as_ref())) {
+		if let Some(pair) = it.peek().map(|(_,c2)| String::from_iter(&[c, *c2]))
+				.filter(|p| COMPLEX_SYMBOLS.contains(&p.deref())) {
 			it.next(); // consume second character
-			return pair;
+			return Some(SmallString::from(pair));
 		}
 	}
 	
@@ -139,6 +136,7 @@ pub fn read_tokens(input: &str) -> Result<Tokens, HissyError> {
 	let mut indent_levels = vec![""];
 	let mut cur_line = 1;
 	let mut line_start = 0;
+	let mut delimiter_levels = 0; // How many ()/[] pairs are we inside of
 	
 	'outer: while let Some((i,c)) = it.peek().copied() {
 		if c.is_ascii_whitespace() { // Get indent
@@ -248,13 +246,31 @@ pub fn read_tokens(input: &str) -> Result<Tokens, HissyError> {
 				}
 				tokens.push(Token::String(contents));
 			} else if let Some(s) = parse_symbol(&mut it, c) {
+				if s == "(" || s == "[" {
+					delimiter_levels += 1;
+				} else if s == ")" || s == "]" {
+					if delimiter_levels == 0 {
+						return Err(error_str("Unexpected closing delimiter", pos));
+					}
+					delimiter_levels -= 1;
+				}
 				tokens.push(Token::Symbol(s));
 			} else {
 				return Err(error(format!("Unexpected character {:?}", c), pos))
 			}
 		}
 		
-		skip_chars(&mut it, &|c| c == ' ' || c == '\t');
+		while let Some((i,c)) = it.peek().copied() {
+			if c == ' ' || c == '\t'  || (delimiter_levels > 0 && (c == '\r' || c == '\n')) {
+				if c == '\n' {
+					cur_line += 1;
+					line_start = i + 1;
+				}
+				it.next();
+			} else {
+				break;
+			}
+		}
 	}
 	
 	let i = input.len();

@@ -319,7 +319,7 @@ impl Program {
 						print!("{}, {}", chunk.format_reg(&mut it)?, chunk.format_reg(&mut it)?);
 					},
 					Add | Sub | Mul | Div | Mod | Pow | Or | And
-						| Eq | Neq | Lth | Leq | Gth | Geq => {
+						| Eq | Neq | Lth | Leq | Gth | Geq | ListGet => {
 						print!("{}, {}, {}", chunk.format_reg(&mut it)?, chunk.format_reg(&mut it)?, chunk.format_reg(&mut it)?);
 					},
 					Func => {
@@ -328,7 +328,7 @@ impl Program {
 					Call => {
 						print!("{}, {}, {}, {}", chunk.format_reg(&mut it)?, chunk.format_reg(&mut it)?, read_u8(&mut it)?, chunk.format_reg(&mut it)?);
 					},
-					Ret => {
+					Ret | ListNew => {
 						print!("{}", chunk.format_reg(&mut it)?);
 					},
 					Jmp => {
@@ -342,6 +342,9 @@ impl Program {
 					},
 					GetExt => {
 						print!("e{}, {}", read_u16(&mut it)?, chunk.format_reg(&mut it)?);
+					},
+					ListExtend => {
+						print!("{}, {}, {}", chunk.format_reg(&mut it)?, chunk.format_reg(&mut it)?, read_u8(&mut it)?);
 					},
 					#[allow(unreachable_patterns)]
 					_ => unimplemented!("Unimplemented disassembly for instruction: {:?}", instr)

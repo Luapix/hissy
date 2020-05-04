@@ -121,7 +121,7 @@ impl CommandSpec {
 	}
 }
 
-const COMMANDS: &[CommandSpec] = &[
+static COMMANDS: &[CommandSpec] = &[
 	CommandSpec::new("lex", true, &[], &[]),
 	CommandSpec::new("parse", true, &[], &[]),
 	CommandSpec::new("compile", true, &["-o"], &["--strip"]),
@@ -188,7 +188,7 @@ fn main() {
 			match cmd.name {
 				"lex" => display_result(lex(&cmd.file.unwrap())),
 				"parse" => debug_result(parse(&cmd.file.unwrap())),
-				"compile" => display_result(compile(&cmd.file.unwrap(), cmd.parameters.get("-o").cloned(), cmd.options.contains("-o"))),
+				"compile" => display_result(compile(&cmd.file.unwrap(), cmd.parameters.get("-o").cloned(), !cmd.options.contains("--strip"))),
 				"list" => display_error(list(&cmd.file.unwrap())),
 				"interpret" => display_error(interpret(&cmd.file.unwrap())),
 				"run" => display_error(run(&cmd.file.unwrap())),

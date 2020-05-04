@@ -43,7 +43,7 @@ peg::parser! {
 		}
 		
 		rule list(pos: &[LineCol]) -> Expr
-			= sym("[") values:(expression(pos) ** sym(",")) sym("]") { Expr::List(values) }
+			= sym("[") values:(expression(pos) ** sym(",")) sym(",")? sym("]") { Expr::List(values) }
 		
 		rule parenthesized(pos: &[LineCol]) -> Expr = sym("(") e:expression(pos) sym(")") { e }
 		
@@ -78,7 +78,7 @@ peg::parser! {
 			x:@ sym("^") y:(@) { Expr::BinOp(BinOp::Power,   Box::new(x), Box::new(y)) }
 			--
 			x:@ sym("[") i:expression(pos) sym("]") { Expr::Index(Box::new(x), Box::new(i)) }
-			f:@ sym("(") args:(expression(pos) ** sym(",")) sym(")") { Expr::Call(Box::new(f), args) }
+			f:@ sym("(") args:(expression(pos) ** sym(",")) sym(",")? sym(")") { Expr::Call(Box::new(f), args) }
 			x:@ sym(".") p:identifier() { Expr::Prop(Box::new(x), p) }
 			--
 			e:primary_expression(pos) { e }
