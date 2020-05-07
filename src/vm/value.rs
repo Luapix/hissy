@@ -266,7 +266,7 @@ mod tests {
 
 	#[test]
 	fn test_bools() {
-		assert_eq!(bool::try_from(&TRUE), Ok(true));
-		assert_eq!(bool::try_from(&FALSE), Ok(false));
+		assert_eq!(bool::try_from(&Value::from(true)), Ok(true));
+		assert_eq!(bool::try_from(&Value::from(false)), Ok(false));
 	}
 }
