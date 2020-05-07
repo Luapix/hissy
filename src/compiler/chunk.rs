@@ -319,7 +319,8 @@ impl Program {
 						print!("{}, {}", chunk.format_reg(&mut it)?, chunk.format_reg(&mut it)?);
 					},
 					Add | Sub | Mul | Div | Mod | Pow | Or | And
-						| Eq | Neq | Lth | Leq | Gth | Geq | ListGet => {
+						| Eq | Neq | Lth | Leq | Gth | Geq
+						| ListGet | ListSet => {
 						print!("{}, {}, {}", chunk.format_reg(&mut it)?, chunk.format_reg(&mut it)?, chunk.format_reg(&mut it)?);
 					},
 					Func => {

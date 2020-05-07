@@ -103,6 +103,8 @@ peg::parser! {
 		rule else_if_branch(pos: &[LineCol]) -> Branch = [Token::Newline] sym("else") b:if_branch(pos) { b }
 		rule else_branch(pos: &[LineCol]) -> Branch = [Token::Newline] sym("else") b:indented_block(pos) { (Cond::Else, b) }
 		
+		rule assignment(pos: &[LineCol]) -> Expr = sym("=") e:expression(pos) { e }
+		
 		rule statement(pos: &[LineCol]) -> Stat
 			= sym("let") i:typed_ident() sym("=") e:expression(pos) { Stat::Let(i,e) }
 			/ sym("let") i:identifier() f:function_decl(pos) {
@@ -117,8 +119,20 @@ peg::parser! {
 			}
 			/ sym("return") e:expression(pos) { Stat::Return(e) }
 			/ sym("while") e:expression(pos) b:indented_block(pos) { Stat::While(e, b) }
-			/ i:identifier() sym("=") e:expression(pos) { Stat::Set(i,e) }
-			/ e:expression(pos) { Stat::ExprStat(e) }
+			/ e:expression(pos) a:assignment(pos)? {?
+				if let Some(assigned) = a {
+					let lexpr = match e {
+						Expr::Id(s) => Ok(LExpr::Id(s)),
+						Expr::Index(l, i) => Ok(LExpr::Index(l, i)),
+						_ => Err("Expected LExpr in assignment"),
+					};
+					lexpr.map(|lexpr|
+						Stat::Set(lexpr, assigned)
+					)
+				} else {
+					Ok(Stat::ExprStat(e))
+				}
+			}
 		
 		rule positioned_statement(pos: &[LineCol]) -> Positioned<Stat>
 			= p:position!() s:statement(pos) { Positioned(s, (pos[p].line, pos[p].column)) }

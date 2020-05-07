@@ -422,6 +422,18 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) -> Result<(), HissyErro
 						let index = usize::try_from(index)
 							.map_err(|_| error_str("Cannot index list with negative integer"))?;
 						*vm.regs.mut_reg(rout) = list.get(index)?;
+					},
+					InstrType::ListSet => {
+						let list = read_u8(&mut vm.it)?;
+						let index = read_u8(&mut vm.it)?;
+						let rin = read_u8(&mut vm.it)?;
+						let list = GCRef::<List>::try_from(vm.regs.reg_or_cst(vm.chunk, heap, list)?.deref().clone())
+							.map_err(|_| error_str("Cannot index non-list value"))?;
+						let index = i32::try_from(vm.regs.reg_or_cst(vm.chunk, heap, index)?.deref())
+							.map_err(|_| error_str("Cannot index list with non-integer"))?;
+						let index = usize::try_from(index)
+							.map_err(|_| error_str("Cannot index list with negative integer"))?;
+						list.set(index, vm.regs.reg_or_cst(vm.chunk, heap, rin)?.clone())?;
 					}
 					#[allow(unreachable_patterns)]
 					i => unimplemented!("Unimplemented instruction: {:?}", i)

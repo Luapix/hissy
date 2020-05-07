@@ -57,12 +57,19 @@ pub enum Type {
 	Function(Vec<Type>, Box<Type>),
 }
 
+/// The left-hand side of an assignment
+#[derive(Debug, PartialEq, Clone)]
+pub enum LExpr {
+	Id(String),
+	Index(Box<Expr>, Box<Expr>),
+}
+
 /// A statement.
 #[derive(Debug, PartialEq, Clone)]
 pub enum Stat {
 	ExprStat(Expr),
 	Let((String, Type), Expr),
-	Set(String, Expr),
+	Set(LExpr, Expr),
 	Cond(Vec<Branch>),
 	While(Expr, Block),
 	Return(Expr),

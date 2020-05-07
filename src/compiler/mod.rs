@@ -9,7 +9,7 @@ use std::convert::TryFrom;
 
 use crate::{HissyError, ErrorType};
 use crate::serial::write_u16;
-use crate::parser::{parse, ast::{Expr, Stat, Positioned, Block, Cond, BinOp, UnaOp}};
+use crate::parser::{parse, ast::*};
 use crate::vm::{MAX_REGISTERS, InstrType, prelude};
 use chunk::{Chunk, ChunkConstant};
 
@@ -490,7 +490,7 @@ impl Compiler {
 						self.compile_expr(e, Some(reg), Some(id.clone()))?;
 						self.ctx.make_local(id, reg);
 					},
-					Stat::Set(id, e) => {
+					Stat::Set(LExpr::Id(id), e) => {
 						let binding = self.ctx.get_binding(&id)?
 							.ok_or_else(|| error(format!("Referencing undefined binding '{}'", id)))?;
 						match binding {
@@ -508,6 +508,18 @@ impl Compiler {
 								return Err(error(format!("Cannot set external value '{}'", id)));
 							},
 						}
+					},
+					Stat::Set(LExpr::Index(lst, idx), e) => {
+						let lst = self.compile_expr(*lst, None, None)?;
+						let idx = self.compile_expr(*idx, None, None)?;
+						let e = self.compile_expr(e, None, None)?;
+						self.ctx.regs.free_temp_reg(lst);
+						self.ctx.regs.free_temp_reg(idx);
+						self.ctx.regs.free_temp_reg(e);
+						self.chunk.emit_instr(InstrType::ListSet);
+						self.chunk.emit_byte(lst);
+						self.chunk.emit_byte(idx);
+						self.chunk.emit_byte(e);
 					},
 					Stat::Cond(mut branches) => {
 						let mut end_jmps = vec![];
