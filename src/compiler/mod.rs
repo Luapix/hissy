@@ -319,6 +319,13 @@ fn resolve_type(ty: &ast::Type) -> Result<Type, HissyError> {
 	}
 }
 
+fn resolve_function_type(args: &[(String, ast::Type)], res_ty: &ast::Type) -> Result<Type, HissyError> {
+	let args_ty: Result<Vec<Type>, HissyError> = args.iter().map(|(_,t)| Ok(resolve_type(t)?)).collect();
+	let args_ty = args_ty?;
+	let res_ty = resolve_type(res_ty)?;
+	Ok(Type::TypedFunction(args_ty, Box::new(res_ty)))
+}
+
 
 /// A struct holding state necessary to compilation.
 pub struct Compiler {
@@ -461,11 +468,26 @@ impl Compiler {
 			},
 			Expr::Call(e, mut args) => {
 				let (func, t) = self.compile_expr(*e, None, None)?;
+				let (args_ty, res_ty) = match t {
+					Type::TypedFunction(args_ty, res_ty) => {
+						if args_ty.len() != args.len() {
+							return Err(error(format!("Expected {} arguments in function call, got {}", args_ty.len(), args.len())))
+						}
+						(Some(args_ty), res_ty)
+					},
+					Type::UntypedFunction(res_ty) => (None, res_ty),
+					_ => return Err(error(format!("Cannot call non-function type {:?}", t))),
+				};
 				let n = u8::try_from(args.len()).map_err(|_| error_str("Too many function arguments"))?;
 				let arg_range = self.ctx.regs.new_reg_range(n)?;
 				for (i, arg) in args.drain(..).enumerate() {
 					let rout = u8::try_from(usize::from(arg_range) + i).unwrap();
-					self.compile_expr(arg, Some(rout), None)?;
+					let (_, t) = self.compile_expr(arg, Some(rout), None)?;
+					if let Some(args_ty) = &args_ty {
+						if !args_ty[i].can_assign(&t) {
+							return Err(error(format!("Expected argument of type {:?}, got {:?}", args_ty[i], t)));
+						}
+					}
 				}
 				self.ctx.regs.free_temp_range(arg_range, n);
 				self.ctx.regs.free_temp_reg(func);
@@ -474,16 +496,17 @@ impl Compiler {
 				self.chunk.emit_byte(arg_range);
 				self.chunk.emit_byte(n);
 				needs_copy = false;
-				(self.emit_reg(dest)?, Type::Any)
+				(self.emit_reg(dest)?, *res_ty)
 			},
-			Expr::Function(args, bl) =>  {
+			Expr::Function(args, res_ty, bl) =>  {
+				let ty = resolve_function_type(&args, &res_ty)?;
 				let args: Result<Vec<(String, Type)>, HissyError> = args.iter().map(|(n,t)| Ok((n.clone(), resolve_type(t)?))).collect();
 				let args = args?;
 				let new_chunk = self.compile_chunk(name.unwrap_or_else(|| String::from("<func>")), bl, args)?;
 				self.chunk.emit_instr(InstrType::Func);
 				self.chunk.emit_byte(new_chunk);
 				needs_copy = false;
-				(self.emit_reg(dest)?, Type::Any)
+				(self.emit_reg(dest)?, ty)
 			},
 			Expr::List(mut values) => {
 				self.chunk.emit_instr(InstrType::ListNew);
@@ -552,13 +575,23 @@ impl Compiler {
 						let (reg, t) = self.compile_expr(e, None, None)?;
 						self.ctx.regs.free_temp_reg(reg);
 					},
-					Stat::Let((id, _ty), e) => {
+					Stat::Let(id, ty, e) => {
 						if let Some((reg, _)) = self.ctx.find_block_local(&id) { // if binding already exists
 							self.ctx.regs.free_reg(reg);
 						}
 						let reg = self.ctx.regs.new_reg()?;
+						let forwarded = {
+							if let Expr::Function(args, res_ty, _) = &e {
+								self.ctx.make_local(id.clone(), reg, resolve_function_type(args, res_ty)?);
+								true
+							} else {
+								false
+							}
+						};
 						let (_, ty) = self.compile_expr(e, Some(reg), Some(id.clone()))?;
-						self.ctx.make_local(id, reg, ty);
+						if !forwarded {
+							self.ctx.make_local(id, reg, ty);
+						}
 					},
 					Stat::Set(LExpr::Id(id), e) => {
 						let binding = self.ctx.get_binding(&id)?

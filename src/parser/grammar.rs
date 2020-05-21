@@ -48,7 +48,7 @@ peg::parser! {
 		rule parenthesized(pos: &[LineCol]) -> Expr = sym("(") e:expression(pos) sym(")") { e }
 		
 		rule function(pos: &[LineCol]) -> Expr =
-			sym("fun") f:function_decl(pos) { f.0 }
+			sym("fun") f:function_decl(pos) { f }
 		
 		rule primary_expression(pos: &[LineCol]) -> Expr
 			= literal() / list(pos) / parenthesized(pos) / function(pos)
@@ -93,10 +93,9 @@ peg::parser! {
 			= sym("->") t:type_desc() { t }
 			/ { Type::Any }
 		
-		rule function_decl(pos: &[LineCol]) -> (Expr, Type)
+		rule function_decl(pos: &[LineCol]) -> Expr
 			= sym("(") a:(typed_ident() ** sym(",")) sym(")") r:return_type() b:indented_block(pos) {
-				let arg_types = a.iter().map(|(n,t)| t.clone()).collect();
-				(Expr::Function(a, b), Type::Function(arg_types, Box::new(r)))
+				Expr::Function(a, r, b)
 			}
 		
 		rule if_branch(pos: &[LineCol]) -> Branch = sym("if") c:expression(pos) b:indented_block(pos) { (Cond::If(c), b) }
@@ -106,11 +105,8 @@ peg::parser! {
 		rule assignment(pos: &[LineCol]) -> Expr = sym("=") e:expression(pos) { e }
 		
 		rule statement(pos: &[LineCol]) -> Stat
-			= sym("let") i:typed_ident() sym("=") e:expression(pos) { Stat::Let(i,e) }
-			/ sym("let") i:identifier() f:function_decl(pos) {
-				let (fn_expr, fn_type) = f;
-				Stat::Let((i, fn_type), fn_expr)
-			}
+			= sym("let") i:typed_ident() sym("=") e:expression(pos) { Stat::Let(i.0, Some(i.1), e) }
+			/ sym("let") i:identifier() f:function_decl(pos) { Stat::Let(i, None, f) }
 			/ i:if_branch(pos) ei:else_if_branch(pos)* e:else_branch(pos)? {
 				let mut branches = vec![i];
 				branches.extend_from_slice(&ei);
