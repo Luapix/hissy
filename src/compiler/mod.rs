@@ -144,14 +144,16 @@ struct ChunkContext {
 	regs: ChunkRegisters,
 	blocks: Vec<BlockContext>,
 	upvalues: Vec<UpvalueBinding>,
+	ret_ty: Type,
 }
 
 impl ChunkContext {
-	pub fn new() -> ChunkContext {
+	pub fn new(ret_ty: Type) -> ChunkContext {
 		ChunkContext {
 			regs: ChunkRegisters::new(),
 			blocks: Vec::new(),
 			upvalues: Vec::new(),
+			ret_ty,
 		}
 	}
 	
@@ -227,8 +229,8 @@ impl Context {
 		}
 	}
 	
-	fn enter(&mut self) {
-		self.stack.push(ChunkContext::new());
+	fn enter(&mut self, ret_ty: Type) {
+		self.stack.push(ChunkContext::new(ret_ty));
 	}
 	
 	fn leave(&mut self) {
@@ -352,6 +354,24 @@ fn resolve_function_type(args: &[(String, ast::Type)], res_ty: &ast::Type) -> Re
 	let args_ty = args_ty?;
 	let res_ty = resolve_type(res_ty)?;
 	Ok(Type::TypedFunction(args_ty, Box::new(res_ty)))
+}
+
+
+fn can_reach_end(block: &Block) -> bool {
+	for Positioned(stat, _) in block {
+		match stat {
+			Stat::Cond(branches) => {
+				if branches.iter().find(|(cond, _)| cond == &Cond::Else).is_some() { // If exhaustive match
+					if branches.iter().all(|(_, block2)| !can_reach_end(block2)) {
+						return false;
+					}
+				}
+			},
+			Stat::Return(_) => return false,
+			_ => {},
+		}
+	}
+	return true;
 }
 
 
@@ -526,11 +546,12 @@ impl Compiler {
 				needs_copy = false;
 				(self.emit_reg(dest)?, *res_ty)
 			},
-			Expr::Function(args, res_ty, bl) =>  {
-				let ty = resolve_function_type(&args, &res_ty)?;
+			Expr::Function(args, ret_ty, bl) =>  {
+				let ty = resolve_function_type(&args, &ret_ty)?;
+				let ret_ty = resolve_type(&ret_ty)?;
 				let args: Result<Vec<(String, Type)>, HissyError> = args.iter().map(|(n,t)| Ok((n.clone(), resolve_type(t)?))).collect();
 				let args = args?;
-				let new_chunk = self.compile_chunk(name.unwrap_or_else(|| String::from("<func>")), bl, args)?;
+				let new_chunk = self.compile_chunk(name.unwrap_or_else(|| String::from("<func>")), bl, args, ret_ty)?;
 				self.chunk.emit_instr(InstrType::Func);
 				self.chunk.emit_byte(new_chunk);
 				needs_copy = false;
@@ -604,13 +625,14 @@ impl Compiler {
 	}
 
 
-	fn compile_block(&mut self, stats: Block) -> Result<(), HissyError> {
+	fn compile_block(&mut self, stats: Block) -> Result<u16, HissyError> {
 		let used_before = self.ctx.regs.used;
 		
 		self.ctx.enter_block();
 		
-		for Positioned(stat, (line, _)) in stats {
-			let line = u16::try_from(line).map_err(|_| error_str("Line number too large"))?;
+		let mut line = 0;
+		for Positioned(stat, (line2, _)) in stats {
+			line = u16::try_from(line2).map_err(|_| error_str("Line number too large"))?;
 			if self.debug_info {
 				let pos = u16::try_from(self.chunk.code.len()).unwrap(); // (The code size is already bounded by the serialization)
 				self.chunk.debug_info.line_numbers.push((pos, line));
@@ -758,8 +780,10 @@ impl Compiler {
 						fill_in_jump_from(&mut self.chunk, placeholder)?;
 					},
 					Stat::Return(e) => {
-						let (reg, _tr) = self.compile_expr(e, None, None)?;
-						// TODO: check that _tr can be assigned to declared output type
+						let (reg, tr) = self.compile_expr(e, None, None)?;
+						if !self.ctx.ret_ty.can_assign(&tr) {
+							return Err(error(format!("Trying to return {:?}, expected {:?}", tr, self.ctx.ret_ty)));
+						}
 						self.ctx.regs.free_temp_reg(reg);
 						self.chunk.emit_instr(InstrType::Ret);
 						self.chunk.emit_byte(reg);
@@ -782,13 +806,13 @@ impl Compiler {
 		assert!(used_before == self.ctx.regs.used, "Leaked register");
 		// Basic check to make sure no registers have been "leaked"
 		
-		Ok(())
+		Ok(line)
 	}
 
 
-	fn compile_chunk(&mut self, name: String, ast: Block, args: Vec<(String, Type)>) -> Result<u8, HissyError> {
+	fn compile_chunk(&mut self, name: String, ast: Block, args: Vec<(String, Type)>, ret_ty: Type) -> Result<u8, HissyError> {
 		let chunk_id = self.chunk.enter();
-		self.ctx.enter();
+		self.ctx.enter(ret_ty);
 		
 		if self.debug_info {
 			self.chunk.debug_info.name = name;
@@ -799,7 +823,15 @@ impl Compiler {
 			let reg = self.ctx.regs.new_reg()?;
 			self.ctx.make_local(id, reg, ty);
 		}
-		self.compile_block(ast)?;
+		
+		let implicit_return = can_reach_end(&ast);
+		let last_line = self.compile_block(ast)?;
+		if implicit_return && !self.ctx.ret_ty.can_assign(&Type::Nil) {
+			return Err(HissyError(ErrorType::Compilation,
+				format!("Implicit nil return at end of function, but expected {:?}", self.ctx.ret_ty),
+				last_line));
+		}
+		
 		self.ctx.leave_block(&mut self.chunk);
 		
 		self.chunk.nb_registers = self.ctx.regs.required;
@@ -818,7 +850,7 @@ impl Compiler {
 	pub fn compile_program(mut self, input: &str) -> Result<Program, HissyError> {
 		let ast = parse(input)?;
 		
-		self.compile_chunk(String::from("<main>"), ast, Vec::new())?;
+		self.compile_chunk(String::from("<main>"), ast, Vec::new(), Type::Nil)?;
 		
 		Ok(Program { debug_info: self.debug_info, chunks: self.chunk.finish() })
 	}
