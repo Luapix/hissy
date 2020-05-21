@@ -329,7 +329,7 @@ impl Program {
 					Call => {
 						print!("{}, {}, {}, {}", chunk.format_reg(&mut it)?, chunk.format_reg(&mut it)?, read_u8(&mut it)?, chunk.format_reg(&mut it)?);
 					},
-					Ret | ListNew => {
+					Ret | ListNew | CloseUp => {
 						print!("{}", chunk.format_reg(&mut it)?);
 					},
 					Jmp => {

@@ -125,7 +125,14 @@ enum Binding {
 }
 
 
-type BlockContext = HashMap<String, (u8, Type)>;
+#[derive(Clone)]
+struct Local {
+	reg: u8,
+	ty: Type,
+	closed_over: bool,
+}
+
+type BlockContext = HashMap<String, Local>;
 
 struct UpvalueBinding {
 	name: String,
@@ -152,8 +159,15 @@ impl ChunkContext {
 		self.blocks.push(BlockContext::new());
 	}
 	
-	fn leave_block(&mut self) {
-		let mut to_free: Vec<u8> = self.blocks.last().unwrap().values().map(|(r,_)| *r).collect();
+	fn leave_block(&mut self, chunk: &mut Chunk) {
+		let to_close: Vec<u8> = self.blocks.last().unwrap().values()
+			.filter_map(|l| if l.closed_over { Some(l.reg) } else { None }).collect();
+		for reg in to_close {
+			chunk.emit_instr(InstrType::CloseUp);
+			chunk.emit_byte(reg);
+		}
+		
+		let mut to_free: Vec<u8> = self.blocks.last().unwrap().values().map(|l| l.reg).collect();
 		to_free.sort_by_key(|&x| Reverse(x));
 		for reg in to_free {
 			self.regs.free_reg(reg);
@@ -161,14 +175,14 @@ impl ChunkContext {
 		self.blocks.pop();
 	}
 	
-	fn find_block_local(&self, id: &str) -> Option<(u8, Type)> {
+	fn find_block_local(&self, id: &str) -> Option<Local> {
 		self.blocks.last().unwrap().get(id).cloned()
 	}
 	
 	fn find_chunk_binding(&self, id: &str) -> Option<Binding> {
 		for ctx in self.blocks.iter().rev() {
-			if let Some((reg, t)) = ctx.get(id).cloned() {
-				return Some(Binding::Local(reg, t));
+			if let Some(local) = ctx.get(id).cloned() {
+				return Some(Binding::Local(local.reg, local.ty));
 			}
 		}
 		if let Some((i,u)) = self.upvalues.iter().enumerate().find(|(_,u)| u.name == id) {
@@ -178,7 +192,7 @@ impl ChunkContext {
 	}
 	
 	fn make_local(&mut self, id: String, reg: u8, ty: Type) {
-		self.blocks.last_mut().unwrap().insert(id, (reg, ty));
+		self.blocks.last_mut().unwrap().insert(id, Local { reg, ty, closed_over: false });
 		self.regs.make_local(reg);
 	}
 	
@@ -186,6 +200,16 @@ impl ChunkContext {
 		let upv = u8::try_from(self.upvalues.len()).map_err(|_| error_str("Too many upvalues in chunk"));
 		self.upvalues.push(UpvalueBinding { name: id, reg, ty });
 		upv
+	}
+	
+	fn close_over(&mut self, id: &str) {
+		for ctx in self.blocks.iter_mut().rev() {
+			if let Some(local) = ctx.get_mut(id) {
+				local.closed_over = true;
+				return;
+			}
+		}
+		panic!("Trying to close over unknown local binding {}", id);
 	}
 }
 
@@ -221,6 +245,10 @@ impl Context {
 				ctx.find_chunk_binding(id).map(|b| (i, b))
 			});
 			if let Some((i, mut binding)) = binding {
+				if let Binding::Local(_,_) = binding {
+					self.stack[i].close_over(id);
+				}
+				
 				// Set it as an upvalue in all inner chunks successively.
 				for ctx in self.stack[i+1..].iter_mut() {
 					let (encoded, ty) = match binding {
@@ -576,8 +604,8 @@ impl Compiler {
 						self.ctx.regs.free_temp_reg(reg);
 					},
 					Stat::Let(id, ty, e) => {
-						if let Some((reg, _)) = self.ctx.find_block_local(&id) { // if binding already exists
-							self.ctx.regs.free_reg(reg);
+						if let Some(local) = self.ctx.find_block_local(&id) { // if binding already exists
+							self.ctx.regs.free_reg(local.reg);
 						}
 						let reg = self.ctx.regs.new_reg()?;
 						let forwarded = {
@@ -700,7 +728,7 @@ impl Compiler {
 			res?;
 		}
 		
-		self.ctx.leave_block();
+		self.ctx.leave_block(&mut self.chunk);
 		
 		assert!(used_before == self.ctx.regs.used, "Leaked register");
 		// Basic check to make sure no registers have been "leaked"
@@ -723,7 +751,7 @@ impl Compiler {
 			self.ctx.make_local(id, reg, ty);
 		}
 		self.compile_block(ast)?;
-		self.ctx.leave_block();
+		self.ctx.leave_block(&mut self.chunk);
 		
 		self.chunk.nb_registers = self.ctx.regs.required;
 		self.chunk.upvalues = self.ctx.upvalues.iter().map(|b| b.reg).collect();

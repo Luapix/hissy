@@ -64,7 +64,7 @@ fn error_str(s: &str) -> HissyError {
 #[repr(u8)]
 pub(crate) enum InstrType {
 	Nop,
-	Cpy, GetUp, SetUp, GetExt,
+	Cpy, GetUp, SetUp, CloseUp, GetExt,
 	Neg, Add, Sub, Mul, Div, Mod, Pow,
 	Not, Or, And,
 	Eq, Neq, Lth, Leq, Gth, Geq,
@@ -228,14 +228,12 @@ impl<'a> VMState<'a> {
 		});
 	}
 	
-	pub fn ret(&mut self, program: &'a Program, heap: &mut GCHeap, ret_val: Value) -> Result<(), HissyError> {
+	pub fn ret(&mut self, program: &'a Program, ret_val: Value) -> Result<(), HissyError> {
 		let cur_call = self.calls.pop().unwrap();
 		let prev_call = self.calls.last().unwrap();
 		
-		for (reg, upv) in cur_call.upvalues { // Close upvalues
-			let val = self.regs.reg_or_cst(self.chunk, heap, reg)?.clone();
-			upv.set_inside(val);
-		}
+		assert!(cur_call.upvalues.is_empty(), "Upvalues where not all closed over");
+		
 		self.regs.reset_window(prev_call.reg_win.0, prev_call.reg_win.1);
 		
 		self.chunk_id = prev_call.closure.chunk_id as usize;
@@ -356,7 +354,7 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) -> Result<(), HissyErro
 						let rin = read_u8(&mut vm.it)?;
 						let temp = vm.regs.reg_or_cst(vm.chunk, heap, rin)?.clone();
 						
-						vm.ret(program, heap, temp)?;
+						vm.ret(program, temp)?;
 					}
 					InstrType::Jmp => {
 						let final_add = read_rel_add(&mut vm.it, &vm.chunk.code)?;
@@ -391,6 +389,13 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) -> Result<(), HissyErro
 						let rin = read_u8(&mut vm.it)?;
 						let upv = vm.calls.last().unwrap().closure.upvalues[upv_idx as usize].clone();
 						vm.regs.set_upvalue(upv, vm.regs.reg_or_cst(vm.chunk, heap, rin)?.clone());
+					},
+					InstrType::CloseUp => {
+						let reg = read_u8(&mut vm.it)?;
+						if let Some(upv) = vm.calls.last_mut().unwrap().upvalues.remove(&reg) { // If there is an upvalue at reg
+							let val = vm.regs.reg_or_cst(vm.chunk, heap, reg)?.clone();
+							upv.set_inside(val);
+						}
 					},
 					InstrType::GetExt => {
 						let ext_idx = read_u16(&mut vm.it)?;
@@ -441,7 +446,7 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) -> Result<(), HissyErro
 			} else if vm.chunk_id == 0 {
 				return Ok(true);
 			} else { // implicit return
-				vm.ret(program, heap, NIL)?;
+				vm.ret(program, NIL)?;
 			}
 			Ok(false)
 		};
