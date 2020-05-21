@@ -95,8 +95,8 @@ peg::parser! {
 		
 		rule function_decl(pos: &[LineCol]) -> (Expr, Type)
 			= sym("(") a:(typed_ident() ** sym(",")) sym(")") r:return_type() b:indented_block(pos) {
-				let (arg_names, arg_types) = a.iter().cloned().unzip();
-				(Expr::Function(arg_names, b), Type::Function(arg_types, Box::new(r)))
+				let arg_types = a.iter().map(|(n,t)| t.clone()).collect();
+				(Expr::Function(a, b), Type::Function(arg_types, Box::new(r)))
 			}
 		
 		rule if_branch(pos: &[LineCol]) -> Branch = sym("if") c:expression(pos) b:indented_block(pos) { (Cond::If(c), b) }

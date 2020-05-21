@@ -36,7 +36,7 @@ pub enum Expr {
 	Index(Box<Expr>, Box<Expr>),
 	Call(Box<Expr>, Vec<Expr>),
 	Prop(Box<Expr>, String),
-	Function(Vec<String>, Block),
+	Function(Vec<(String, Type)>, Block),
 }
 
 /// The guard on a condition branch (else / else if).

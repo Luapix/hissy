@@ -1,6 +1,10 @@
 
 pub(crate) mod chunk;
+pub(crate) mod types;
+
+
 pub use chunk::Program;
+pub use types::Type;
 
 use std::ops::{Deref, DerefMut};
 use std::cmp::Reverse;
@@ -9,7 +13,7 @@ use std::convert::TryFrom;
 
 use crate::{HissyError, ErrorType};
 use crate::serial::write_u16;
-use crate::parser::{parse, ast::*};
+use crate::parser::{parse, ast, ast::*};
 use crate::vm::{MAX_REGISTERS, InstrType, prelude};
 use chunk::{Chunk, ChunkConstant};
 
@@ -115,17 +119,18 @@ impl ChunkRegisters {
 
 
 enum Binding {
-	Local(u8),
-	Upvalue(u8),
-	External(u16),
+	Local(u8, Type),
+	Upvalue(u8, Type),
+	External(u16, Type),
 }
 
 
-type BlockContext = HashMap<String, u8>;
+type BlockContext = HashMap<String, (u8, Type)>;
 
 struct UpvalueBinding {
 	name: String,
 	reg: u8,
+	ty: Type,
 }
 
 struct ChunkContext {
@@ -148,7 +153,7 @@ impl ChunkContext {
 	}
 	
 	fn leave_block(&mut self) {
-		let mut to_free: Vec<u8> = self.blocks.last().unwrap().values().copied().collect();
+		let mut to_free: Vec<u8> = self.blocks.last().unwrap().values().map(|(r,_)| *r).collect();
 		to_free.sort_by_key(|&x| Reverse(x));
 		for reg in to_free {
 			self.regs.free_reg(reg);
@@ -156,30 +161,30 @@ impl ChunkContext {
 		self.blocks.pop();
 	}
 	
-	fn find_block_local(&self, id: &str) -> Option<u8> {
-		self.blocks.last().unwrap().get(id).copied()
+	fn find_block_local(&self, id: &str) -> Option<(u8, Type)> {
+		self.blocks.last().unwrap().get(id).cloned()
 	}
 	
 	fn find_chunk_binding(&self, id: &str) -> Option<Binding> {
 		for ctx in self.blocks.iter().rev() {
-			if let Some(reg) = ctx.get(id) {
-				return Some(Binding::Local(*reg));
+			if let Some((reg, t)) = ctx.get(id).cloned() {
+				return Some(Binding::Local(reg, t));
 			}
 		}
-		if let Some((i,_)) = self.upvalues.iter().enumerate().find(|(_,u)| u.name == id) {
-			return Some(Binding::Upvalue(u8::try_from(i).unwrap()));
+		if let Some((i,u)) = self.upvalues.iter().enumerate().find(|(_,u)| u.name == id) {
+			return Some(Binding::Upvalue(u8::try_from(i).unwrap(), u.ty.clone()));
 		}
 		None
 	}
 	
-	fn make_local(&mut self, id: String, reg: u8) {
-		self.blocks.last_mut().unwrap().insert(id, reg);
+	fn make_local(&mut self, id: String, reg: u8, ty: Type) {
+		self.blocks.last_mut().unwrap().insert(id, (reg, ty));
 		self.regs.make_local(reg);
 	}
 	
-	fn make_upvalue(&mut self, id: String, reg: u8) -> Result<u8, HissyError> {
+	fn make_upvalue(&mut self, id: String, reg: u8, ty: Type) -> Result<u8, HissyError> {
 		let upv = u8::try_from(self.upvalues.len()).map_err(|_| error_str("Too many upvalues in chunk"));
-		self.upvalues.push(UpvalueBinding { name: id, reg });
+		self.upvalues.push(UpvalueBinding { name: id, reg, ty });
 		upv
 	}
 }
@@ -187,7 +192,7 @@ impl ChunkContext {
 
 struct Context {
 	stack: Vec<ChunkContext>,
-	external: Vec<String>,
+	external: Vec<(String, Type)>,
 }
 
 impl Context {
@@ -218,19 +223,21 @@ impl Context {
 			if let Some((i, mut binding)) = binding {
 				// Set it as an upvalue in all inner chunks successively.
 				for ctx in self.stack[i+1..].iter_mut() {
-					let encoded = match binding {
-						Binding::Local(reg) => reg,
-						Binding::Upvalue(upv) => upv + MAX_REGISTERS,
+					let (encoded, ty) = match binding {
+						Binding::Local(reg, ty) => (reg, ty),
+						Binding::Upvalue(upv, ty) => (upv + MAX_REGISTERS, ty),
 						_ => unreachable!(),
 					};
 					// Note: registers 128-255 correspond to constants in bytecode,
 					// but correspond to upvalues in the parent chunk in upvalue tables.
-					let upv = ctx.make_upvalue(id.to_string(), encoded)?;
-					binding = Binding::Upvalue(upv);
+					let upv = ctx.make_upvalue(id.to_string(), encoded, ty.clone())?;
+					binding = Binding::Upvalue(upv, ty);
 				}
 				Ok(Some(binding))
-			} else if let Some(ext_idx) = self.external.iter().position(|id2| id == id2) {
-				Ok(Some(Binding::External(u16::try_from(ext_idx).expect("External index is too high"))))
+			} else if let Some(ext_idx) = self.external.iter().position(|(id2, _)| id == id2) {
+				let ty = self.external[ext_idx].1.clone();
+				let ext_idx = u16::try_from(ext_idx).expect("External index is too high");
+				Ok(Some(Binding::External(ext_idx, ty)))
 			} else {
 				Ok(None)
 			}
@@ -292,6 +299,27 @@ impl DerefMut for ChunkManager {
 }
 
 
+fn resolve_type(ty: &ast::Type) -> Result<Type, HissyError> {
+	match ty {
+		ast::Type::Any => Ok(Type::Any),
+		ast::Type::Named(name) => {
+			match name.deref() {
+				"Nil" => Ok(Type::Nil),
+				"Bool" => Ok(Type::Bool),
+				"Int" => Ok(Type::Int),
+				"Real" => Ok(Type::Real),
+				"String" => Ok(Type::String),
+				_ => Err(error(format!("Unknown type name '{}'", name)))
+			}
+		},
+		ast::Type::Function(args, res) => {
+			let args: Result<Vec<Type>, HissyError> = args.iter().map(resolve_type).collect();
+			Ok(Type::TypedFunction(args?, Box::new(resolve_type(res)?)))
+		},
+	}
+}
+
+
 /// A struct holding state necessary to compilation.
 pub struct Compiler {
 	debug_info: bool,
@@ -319,42 +347,42 @@ impl Compiler {
 	// Compile computation of expr (into dest if given), and returns final register
 	// Warning: If no dest is given, do not assume the final register is a new, temporary one,
 	// it may be a local or a constant!
-	fn compile_expr(&mut self, expr: Expr, dest: Option<u8>, name: Option<String>) -> Result<u8, HissyError> {
+	fn compile_expr(&mut self, expr: Expr, dest: Option<u8>, name: Option<String>) -> Result<(u8, Type), HissyError> {
 		let mut needs_copy = true;
 		
-		let mut reg = match expr {
+		let (mut reg, ty) = match expr {
 			Expr::Nil =>
-				self.chunk.compile_constant(ChunkConstant::Nil)?,
+				(self.chunk.compile_constant(ChunkConstant::Nil)?, Type::Nil),
 			Expr::Bool(b) =>
-				self.chunk.compile_constant(ChunkConstant::Bool(b))?,
+				(self.chunk.compile_constant(ChunkConstant::Bool(b))?, Type::Bool),
 			Expr::Int(i) =>
-				self.chunk.compile_constant(ChunkConstant::Int(i))?,
+				(self.chunk.compile_constant(ChunkConstant::Int(i))?, Type::Int),
 			Expr::Real(r) =>
-				self.chunk.compile_constant(ChunkConstant::Real(r))?,
+				(self.chunk.compile_constant(ChunkConstant::Real(r))?, Type::Real),
 			Expr::String(s) => 
-				self.chunk.compile_constant(ChunkConstant::String(s))?,
+				(self.chunk.compile_constant(ChunkConstant::String(s))?, Type::String),
 			Expr::Id(s) => {
 				let binding = self.ctx.get_binding(&s)?
 					.ok_or_else(|| error(format!("Referencing undefined binding '{}'", s)))?;
 				match binding {
-					Binding::Local(reg) => reg,
-					Binding::Upvalue(upv) => {
+					Binding::Local(reg, t) => (reg, t),
+					Binding::Upvalue(upv, t) => {
 						self.chunk.emit_instr(InstrType::GetUp);
 						self.chunk.emit_byte(upv);
 						needs_copy = false;
-						self.emit_reg(dest)?
+						(self.emit_reg(dest)?, t)
 					},
-					Binding::External(ext_idx) => {
+					Binding::External(ext_idx, t) => {
 						self.chunk.emit_instr(InstrType::GetExt);
 						write_u16(&mut self.chunk.code, ext_idx);
 						needs_copy = false;
-						self.emit_reg(dest)?
+						(self.emit_reg(dest)?, t)
 					}
 				}
 			},
 			Expr::BinOp(op, e1, e2) => {
-				let r1 = self.compile_expr(*e1, None, None)?;
-				let r2 = self.compile_expr(*e2, None, None)?;
+				let (r1, t1) = self.compile_expr(*e1, None, None)?;
+				let (r2, t2) = self.compile_expr(*e2, None, None)?;
 				self.ctx.regs.free_temp_reg(r2);
 				self.ctx.regs.free_temp_reg(r1);
 				let instr = match op {
@@ -373,26 +401,66 @@ impl Compiler {
 					BinOp::And => InstrType::And,
 					BinOp::Or => InstrType::Or,
 				};
+				let ty = match op {
+					  BinOp::Plus | BinOp::Minus | BinOp::Times | BinOp::Divides
+					| BinOp::Modulo | BinOp::Power => {
+						if !t1.is_numeric() || !t2.is_numeric() {
+							return Err(error(format!("Cannot use numeric operator on {:?} and {:?}", t1, t2)));
+						}
+						if t1 == Type::Int && t2 == Type::Int && op != BinOp::Power {
+							Type::Int
+						} else {
+							Type::Real
+						}
+					},
+					BinOp::LEq | BinOp::GEq | BinOp::Less | BinOp::Greater => {
+						if !t1.is_numeric() || !t2.is_numeric() {
+							return Err(error(format!("Cannot use numeric operator on {:?} and {:?}", t1, t2)));
+						}
+						Type::Bool
+					},
+					BinOp::Equal | BinOp::NEq => Type::Bool,
+					BinOp::And | BinOp::Or => {
+						if t1 != Type::Bool || t2 != Type::Bool {
+							return Err(error(format!("Cannot use boolean operator on {:?} and {:?}", t1, t2)));
+						}
+						Type::Bool
+					},
+				};
 				self.chunk.emit_instr(instr);
 				self.chunk.emit_byte(r1);
 				self.chunk.emit_byte(r2);
 				needs_copy = false;
-				self.emit_reg(dest)?
+				(self.emit_reg(dest)?, ty)
 			},
 			Expr::UnaOp(op, e) => {
-				let r = self.compile_expr(*e, dest, None)?;
+				let (r, t) = self.compile_expr(*e, dest, None)?;
 				self.ctx.regs.free_temp_reg(r);
 				let instr = match op {
 					UnaOp::Not => InstrType::Not,
 					UnaOp::Minus => InstrType::Neg,
 				};
+				let ty = match op {
+					UnaOp::Not => {
+						if t != Type::Bool {
+							return Err(error(format!("Cannot use boolean operator on {:?}", t)));
+						}
+						Type::Bool
+					},
+					UnaOp::Minus => {
+						if !t.is_numeric() {
+							return Err(error(format!("Cannot use numeric operator on {:?}", t)));
+						}
+						t.clone()
+					},
+				};
 				self.chunk.emit_instr(instr);
 				self.chunk.emit_byte(r);
 				needs_copy = false;
-				self.emit_reg(dest)?
+				(self.emit_reg(dest)?, ty)
 			},
 			Expr::Call(e, mut args) => {
-				let func = self.compile_expr(*e, None, None)?;
+				let (func, t) = self.compile_expr(*e, None, None)?;
 				let n = u8::try_from(args.len()).map_err(|_| error_str("Too many function arguments"))?;
 				let arg_range = self.ctx.regs.new_reg_range(n)?;
 				for (i, arg) in args.drain(..).enumerate() {
@@ -406,14 +474,16 @@ impl Compiler {
 				self.chunk.emit_byte(arg_range);
 				self.chunk.emit_byte(n);
 				needs_copy = false;
-				self.emit_reg(dest)?
+				(self.emit_reg(dest)?, Type::Any)
 			},
 			Expr::Function(args, bl) =>  {
+				let args: Result<Vec<(String, Type)>, HissyError> = args.iter().map(|(n,t)| Ok((n.clone(), resolve_type(t)?))).collect();
+				let args = args?;
 				let new_chunk = self.compile_chunk(name.unwrap_or_else(|| String::from("<func>")), bl, args)?;
 				self.chunk.emit_instr(InstrType::Func);
 				self.chunk.emit_byte(new_chunk);
 				needs_copy = false;
-				self.emit_reg(dest)?
+				(self.emit_reg(dest)?, Type::Any)
 			},
 			Expr::List(mut values) => {
 				self.chunk.emit_instr(InstrType::ListNew);
@@ -434,18 +504,18 @@ impl Compiler {
 					self.chunk.emit_byte(n);
 				}
 				
-				reg
+				(reg, Type::List(Box::new(Type::Any)))
 			},
 			Expr::Index(list, index) => {
-				let list = self.compile_expr(*list, None, None)?;
-				let index = self.compile_expr(*index, None, None)?;
+				let (list, t) = self.compile_expr(*list, None, None)?;
+				let (index, t) = self.compile_expr(*index, None, None)?;
 				self.ctx.regs.free_temp_reg(list);
 				self.ctx.regs.free_temp_reg(index);
 				self.chunk.emit_instr(InstrType::ListGet);
 				self.chunk.emit_byte(list);
 				self.chunk.emit_byte(index);
 				needs_copy = false;
-				self.emit_reg(dest)?
+				(self.emit_reg(dest)?, Type::Any)
 			},
 			#[allow(unreachable_patterns)]
 			_ => unimplemented!("Unimplemented expression type: {:?}", expr),
@@ -460,7 +530,7 @@ impl Compiler {
 			}
 		}
 		
-		Ok(reg)
+		Ok((reg, ty))
 	}
 
 
@@ -479,40 +549,40 @@ impl Compiler {
 			let compile_stat = || -> Result<(), HissyError> {
 				match stat {
 					Stat::ExprStat(e) => {
-						let reg = self.compile_expr(e, None, None)?;
+						let (reg, t) = self.compile_expr(e, None, None)?;
 						self.ctx.regs.free_temp_reg(reg);
 					},
 					Stat::Let((id, _ty), e) => {
-						if let Some(reg) = self.ctx.find_block_local(&id) { // if binding already exists
+						if let Some((reg, _)) = self.ctx.find_block_local(&id) { // if binding already exists
 							self.ctx.regs.free_reg(reg);
 						}
 						let reg = self.ctx.regs.new_reg()?;
-						self.compile_expr(e, Some(reg), Some(id.clone()))?;
-						self.ctx.make_local(id, reg);
+						let (_, ty) = self.compile_expr(e, Some(reg), Some(id.clone()))?;
+						self.ctx.make_local(id, reg, ty);
 					},
 					Stat::Set(LExpr::Id(id), e) => {
 						let binding = self.ctx.get_binding(&id)?
 							.ok_or_else(|| error(format!("Referencing undefined binding '{}'", id)))?;
 						match binding {
-							Binding::Local(reg) => {
+							Binding::Local(reg, ty) => {
 								self.compile_expr(e, Some(reg), None)?;
 							},
-							Binding::Upvalue(upv) => {
-								let reg = self.compile_expr(e, None, None)?;
+							Binding::Upvalue(upv, ty) => {
+								let (reg, t) = self.compile_expr(e, None, None)?;
 								self.ctx.regs.free_temp_reg(reg);
 								self.chunk.emit_instr(InstrType::SetUp);
 								self.chunk.emit_byte(upv);
 								self.chunk.emit_byte(reg);
 							},
-							Binding::External(_) => {
+							Binding::External(_, _) => {
 								return Err(error(format!("Cannot set external value '{}'", id)));
 							},
 						}
 					},
 					Stat::Set(LExpr::Index(lst, idx), e) => {
-						let lst = self.compile_expr(*lst, None, None)?;
-						let idx = self.compile_expr(*idx, None, None)?;
-						let e = self.compile_expr(e, None, None)?;
+						let (lst, tl) = self.compile_expr(*lst, None, None)?;
+						let (idx, ti) = self.compile_expr(*idx, None, None)?;
+						let (e, te) = self.compile_expr(e, None, None)?;
 						self.ctx.regs.free_temp_reg(lst);
 						self.ctx.regs.free_temp_reg(idx);
 						self.ctx.regs.free_temp_reg(e);
@@ -528,7 +598,7 @@ impl Compiler {
 							let mut after_jmp = None;
 							match cond {
 								Cond::If(e) => {
-									let cond_reg = self.compile_expr(e, None, None)?;
+									let (cond_reg, t) = self.compile_expr(e, None, None)?;
 									
 									// Jump to next branch if false
 									self.ctx.regs.free_temp_reg(cond_reg);
@@ -564,7 +634,7 @@ impl Compiler {
 					},
 					Stat::While(e, bl) => {
 						let begin = self.chunk.code.len();
-						let cond_reg = self.compile_expr(e, None, None)?;
+						let (cond_reg, t) = self.compile_expr(e, None, None)?;
 						
 						self.ctx.regs.free_temp_reg(cond_reg);
 						self.chunk.emit_instr(InstrType::Jif);
@@ -579,7 +649,7 @@ impl Compiler {
 						fill_in_jump_from(&mut self.chunk, placeholder)?;
 					},
 					Stat::Return(e) => {
-						let reg = self.compile_expr(e, None, None)?;
+						let (reg, tr) = self.compile_expr(e, None, None)?;
 						self.ctx.regs.free_temp_reg(reg);
 						self.chunk.emit_instr(InstrType::Ret);
 						self.chunk.emit_byte(reg);
@@ -606,7 +676,7 @@ impl Compiler {
 	}
 
 
-	fn compile_chunk(&mut self, name: String, ast: Block, args: Vec<String>) -> Result<u8, HissyError> {
+	fn compile_chunk(&mut self, name: String, ast: Block, args: Vec<(String, Type)>) -> Result<u8, HissyError> {
 		let chunk_id = self.chunk.enter();
 		self.ctx.enter();
 		
@@ -615,9 +685,9 @@ impl Compiler {
 		}
 		
 		self.ctx.enter_block();
-		for id in args {
+		for (id, ty) in args {
 			let reg = self.ctx.regs.new_reg()?;
-			self.ctx.make_local(id, reg);
+			self.ctx.make_local(id, reg, ty);
 		}
 		self.compile_block(ast)?;
 		self.ctx.leave_block();

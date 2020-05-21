@@ -1,10 +1,11 @@
 
+use crate::compiler::Type;
 use crate::vm::{gc::GCHeap, value::{Value, NIL}, object::NativeFunction};
 
-pub fn list() -> Vec<String> {
+pub fn list() -> Vec<(String, Type)> {
 	vec![
-		"log"
-	].iter().copied().map(String::from).collect()
+		(String::from("log"), Type::UntypedFunction(Box::new(Type::Nil)))
+	]
 }
 
 pub fn create(heap: &mut GCHeap) -> Vec<Value> {
