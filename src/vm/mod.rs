@@ -228,21 +228,29 @@ impl<'a> VMState<'a> {
 		});
 	}
 	
-	pub fn ret(&mut self, program: &'a Program, ret_val: Value) -> Result<(), HissyError> {
+	pub fn ret(&mut self, program: &'a Program, ret_val: Value) -> Result<bool, HissyError> {
 		let cur_call = self.calls.pop().unwrap();
-		let prev_call = self.calls.last().unwrap();
 		
-		assert!(cur_call.upvalues.is_empty(), "Upvalues where not all closed over");
-		
-		self.regs.reset_window(prev_call.reg_win.0, prev_call.reg_win.1);
-		
-		self.chunk_id = prev_call.closure.chunk_id as usize;
-		self.chunk = &program.chunks[self.chunk_id];
-		let ret = cur_call.return_params.expect("No return address/register set");
-		self.it = iter_from(&self.chunk.code, ret.add);
-		*self.regs.mut_reg(ret.reg) = ret_val;
-		
-		Ok(())
+		if let Some(prev_call) = self.calls.last() {
+			assert!(cur_call.upvalues.is_empty(), "Upvalues where not all closed over");
+			
+			self.regs.reset_window(prev_call.reg_win.0, prev_call.reg_win.1);
+			
+			self.chunk_id = prev_call.closure.chunk_id as usize;
+			self.chunk = &program.chunks[self.chunk_id];
+			let ret = cur_call.return_params.expect("No return address/register set");
+			self.it = iter_from(&self.chunk.code, ret.add);
+			*self.regs.mut_reg(ret.reg) = ret_val;
+			
+			Ok(false)
+			
+		} else { // Return from main chunk
+			self.chunk_id = 0;
+			self.chunk = &program.chunks[0];
+			self.it = [].iter();
+			
+			Ok(true)
+		}
 	}
 }
 
@@ -251,6 +259,8 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) -> Result<(), HissyErro
 	let mut vm = VMState::new(program);
 	
 	vm.external.extend(prelude::create(heap));
+	
+	
 	
 	let main = heap.make_ref(Closure::new(0, vec![]));
 	vm.call(program, main, 0, None);
@@ -354,7 +364,9 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) -> Result<(), HissyErro
 						let rin = read_u8(&mut vm.it)?;
 						let temp = vm.regs.reg_or_cst(vm.chunk, heap, rin)?.clone();
 						
-						vm.ret(program, temp)?;
+						if vm.ret(program, temp)? {
+							return Ok(true);
+						}
 					}
 					InstrType::Jmp => {
 						let final_add = read_rel_add(&mut vm.it, &vm.chunk.code)?;
@@ -443,10 +455,10 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) -> Result<(), HissyErro
 					#[allow(unreachable_patterns)]
 					i => unimplemented!("Unimplemented instruction: {:?}", i)
 				}
-			} else if vm.chunk_id == 0 {
-				return Ok(true);
 			} else { // implicit return
-				vm.ret(program, NIL)?;
+				if vm.ret(program, NIL)? {
+					return Ok(true);
+				}
 			}
 			Ok(false)
 		};

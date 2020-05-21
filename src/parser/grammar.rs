@@ -116,7 +116,7 @@ peg::parser! {
 				if let Some(b) = e { branches.push(b) }
 				Stat::Cond(branches)
 			}
-			/ sym("return") e:expression(pos) { Stat::Return(e) }
+			/ sym("return") e:expression(pos)? { Stat::Return(e.unwrap_or(Expr::Nil)) }
 			/ sym("while") e:expression(pos) b:indented_block(pos) { Stat::While(e, b) }
 			/ e:expression(pos) a:assignment(pos)? {?
 				if let Some(assigned) = a {
