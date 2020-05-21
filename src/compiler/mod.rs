@@ -450,14 +450,14 @@ impl Compiler {
 					},
 					BinOp::LEq | BinOp::GEq | BinOp::Less | BinOp::Greater => {
 						if !t1.is_numeric() || !t2.is_numeric() {
-							return Err(error(format!("Cannot use numeric operator on {:?} and {:?}", t1, t2)));
+							return Err(error(format!("Cannot use comparison operator on {:?} and {:?}", t1, t2)));
 						}
 						Type::Bool
 					},
 					BinOp::Equal | BinOp::NEq => Type::Bool,
 					BinOp::And | BinOp::Or => {
 						if t1 != Type::Bool || t2 != Type::Bool {
-							return Err(error(format!("Cannot use boolean operator on {:?} and {:?}", t1, t2)));
+							return Err(error(format!("Cannot compare {:?} and {:?}", t1, t2)));
 						}
 						Type::Bool
 					},
@@ -758,7 +758,8 @@ impl Compiler {
 						fill_in_jump_from(&mut self.chunk, placeholder)?;
 					},
 					Stat::Return(e) => {
-						let (reg, tr) = self.compile_expr(e, None, None)?;
+						let (reg, _tr) = self.compile_expr(e, None, None)?;
+						// TODO: check that _tr can be assigned to declared output type
 						self.ctx.regs.free_temp_reg(reg);
 						self.chunk.emit_instr(InstrType::Ret);
 						self.chunk.emit_byte(reg);
