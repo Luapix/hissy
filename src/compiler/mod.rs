@@ -329,9 +329,9 @@ impl DerefMut for ChunkManager {
 
 fn resolve_type(ty: &ast::Type) -> Result<Type, HissyError> {
 	match ty {
-		ast::Type::Any => Ok(Type::Any),
 		ast::Type::Named(name) => {
 			match name.deref() {
+				"Any" => Ok(Type::Any),
 				"Nil" => Ok(Type::Nil),
 				"Bool" => Ok(Type::Bool),
 				"Int" => Ok(Type::Int),
@@ -541,12 +541,25 @@ impl Compiler {
 				needs_copy = false;
 				let reg = self.emit_reg(dest)?;
 				
+				let mut el_ty: Option<Type> = None;
+				
 				if !values.is_empty() {
 					let n = u8::try_from(values.len()).map_err(|_| error_str("Too many values in list"))?;
 					let val_range = self.ctx.regs.new_reg_range(n)?;
 					for (i, val) in values.drain(..).enumerate() {
 						let rout = u8::try_from(usize::from(val_range) + i).unwrap();
-						self.compile_expr(val, Some(rout), None)?;
+						let (_, ty) = self.compile_expr(val, Some(rout), None)?;
+						if let Some(el_ty2) = &el_ty {
+							if !el_ty2.can_assign(&ty) {
+								if ty.can_assign(&el_ty2) {
+									el_ty = Some(ty);
+								} else {
+									el_ty = Some(Type::Any);
+								}
+							}
+						} else {
+							el_ty = Some(ty);
+						}
 					}
 					self.ctx.regs.free_temp_range(val_range, n);
 					self.chunk.emit_instr(InstrType::ListExtend);
@@ -555,18 +568,24 @@ impl Compiler {
 					self.chunk.emit_byte(n);
 				}
 				
-				(reg, Type::List(Box::new(Type::Any)))
+				(reg, Type::List(Box::new(el_ty.unwrap_or(Type::Any))))
 			},
 			Expr::Index(list, index) => {
-				let (list, t) = self.compile_expr(*list, None, None)?;
-				let (index, t) = self.compile_expr(*index, None, None)?;
+				let (list, tl) = self.compile_expr(*list, None, None)?;
+				let tr = if let Type::List(tr) = tl { *tr } else {
+					return Err(error(format!("Cannot index object of type {:?}", tl)));
+				};
+				let (index, ti) = self.compile_expr(*index, None, None)?;
+				if ti != Type::Int {
+					return Err(error(format!("Cannot index list with {:?}", ti)));
+				}
 				self.ctx.regs.free_temp_reg(list);
 				self.ctx.regs.free_temp_reg(index);
 				self.chunk.emit_instr(InstrType::ListGet);
 				self.chunk.emit_byte(list);
 				self.chunk.emit_byte(index);
 				needs_copy = false;
-				(self.emit_reg(dest)?, Type::Any)
+				(self.emit_reg(dest)?, tr)
 			},
 			#[allow(unreachable_patterns)]
 			_ => unimplemented!("Unimplemented expression type: {:?}", expr),
@@ -600,10 +619,11 @@ impl Compiler {
 			let compile_stat = || -> Result<(), HissyError> {
 				match stat {
 					Stat::ExprStat(e) => {
-						let (reg, t) = self.compile_expr(e, None, None)?;
+						let (reg, _t) = self.compile_expr(e, None, None)?;
 						self.ctx.regs.free_temp_reg(reg);
 					},
 					Stat::Let(id, ty, e) => {
+						let ty = ty.map(|ty| resolve_type(&ty)).transpose()?;
 						if let Some(local) = self.ctx.find_block_local(&id) { // if binding already exists
 							self.ctx.regs.free_reg(local.reg);
 						}
@@ -616,7 +636,15 @@ impl Compiler {
 								false
 							}
 						};
-						let (_, ty) = self.compile_expr(e, Some(reg), Some(id.clone()))?;
+						let (_, ty2) = self.compile_expr(e, Some(reg), Some(id.clone()))?;
+						let ty = if let Some(ty) = ty {
+							if !ty.can_assign(&ty2) {
+								return Err(error(format!("Cannot define variable of type {:?} with expression of type {:?}", ty, ty2)));
+							}
+							ty
+						} else {
+							ty2
+						};
 						if !forwarded {
 							self.ctx.make_local(id, reg, ty);
 						}
@@ -624,26 +652,40 @@ impl Compiler {
 					Stat::Set(LExpr::Id(id), e) => {
 						let binding = self.ctx.get_binding(&id)?
 							.ok_or_else(|| error(format!("Referencing undefined binding '{}'", id)))?;
-						match binding {
+						let (ty, ty2) = match binding {
 							Binding::Local(reg, ty) => {
-								self.compile_expr(e, Some(reg), None)?;
+								let (_, ty2) = self.compile_expr(e, Some(reg), None)?;
+								(ty, ty2)
 							},
 							Binding::Upvalue(upv, ty) => {
-								let (reg, t) = self.compile_expr(e, None, None)?;
+								let (reg, ty2) = self.compile_expr(e, None, None)?;
 								self.ctx.regs.free_temp_reg(reg);
 								self.chunk.emit_instr(InstrType::SetUp);
 								self.chunk.emit_byte(upv);
 								self.chunk.emit_byte(reg);
+								(ty, ty2)
 							},
 							Binding::External(_, _) => {
 								return Err(error(format!("Cannot set external value '{}'", id)));
 							},
+						};
+						if !ty.can_assign(&ty2) {
+							return Err(error(format!("Cannot assign type {:?} to variable of type {:?}", ty2, ty)));
 						}
 					},
 					Stat::Set(LExpr::Index(lst, idx), e) => {
 						let (lst, tl) = self.compile_expr(*lst, None, None)?;
+						let te = if let Type::List(te) = tl { *te } else {
+							return Err(error(format!("Cannot index object of type {:?}", tl)));
+						};
 						let (idx, ti) = self.compile_expr(*idx, None, None)?;
-						let (e, te) = self.compile_expr(e, None, None)?;
+						if ti != Type::Int {
+							return Err(error(format!("Cannot index list with {:?}", ti)));
+						}
+						let (e, te2) = self.compile_expr(e, None, None)?;
+						if !te.can_assign(&te2) {
+							return Err(error(format!("Cannot assign type {:?} into list of {:?}", te2, te)));
+						}
 						self.ctx.regs.free_temp_reg(lst);
 						self.ctx.regs.free_temp_reg(idx);
 						self.ctx.regs.free_temp_reg(e);
@@ -660,6 +702,9 @@ impl Compiler {
 							match cond {
 								Cond::If(e) => {
 									let (cond_reg, t) = self.compile_expr(e, None, None)?;
+									if t != Type::Bool {
+										return Err(error(format!("Expected boolean in condition, got {:?}", t)))
+									}
 									
 									// Jump to next branch if false
 									self.ctx.regs.free_temp_reg(cond_reg);
@@ -696,6 +741,9 @@ impl Compiler {
 					Stat::While(e, bl) => {
 						let begin = self.chunk.code.len();
 						let (cond_reg, t) = self.compile_expr(e, None, None)?;
+						if t != Type::Bool {
+							return Err(error(format!("Expected boolean in condition, got {:?}", t)))
+						}
 						
 						self.ctx.regs.free_temp_reg(cond_reg);
 						self.chunk.emit_instr(InstrType::Jif);

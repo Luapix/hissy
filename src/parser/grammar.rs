@@ -86,15 +86,18 @@ peg::parser! {
 		
 		rule type_desc() -> Type
 			= t:identifier() { Type::Named(t) }
-		rule typed_ident() -> (String, Type)
-			= i:identifier() sym(":") t:type_desc() { (i, t) }
-			/ i:identifier() { (i, Type::Any) }
+		rule typed_ident() -> (String, Option<Type>)
+			= i:identifier() sym(":") t:type_desc() { (i, Some(t)) }
+			/ i:identifier() { (i, None) }
 		rule return_type() -> Type
 			= sym("->") t:type_desc() { t }
-			/ { Type::Any }
+			/ { Type::Named(String::from("Nil")) }
 		
 		rule function_decl(pos: &[LineCol]) -> Expr
 			= sym("(") a:(typed_ident() ** sym(",")) sym(")") r:return_type() b:indented_block(pos) {
+				let a = a.iter().map(|(i,t)|
+					(i.clone(), t.clone().unwrap_or(Type::Named(String::from("Any"))))
+				).collect();
 				Expr::Function(a, r, b)
 			}
 		
@@ -105,7 +108,7 @@ peg::parser! {
 		rule assignment(pos: &[LineCol]) -> Expr = sym("=") e:expression(pos) { e }
 		
 		rule statement(pos: &[LineCol]) -> Stat
-			= sym("let") i:typed_ident() sym("=") e:expression(pos) { Stat::Let(i.0, Some(i.1), e) }
+			= sym("let") i:typed_ident() sym("=") e:expression(pos) { Stat::Let(i.0, i.1, e) }
 			/ sym("let") i:identifier() f:function_decl(pos) { Stat::Let(i, None, f) }
 			/ i:if_branch(pos) ei:else_if_branch(pos)* e:else_branch(pos)? {
 				let mut branches = vec![i];

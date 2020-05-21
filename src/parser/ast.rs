@@ -52,7 +52,6 @@ pub type Branch = (Cond, Block);
 /// A type description.
 #[derive(Debug, PartialEq, Clone)]
 pub enum Type {
-	Any,
 	Named(String),
 	Function(Vec<Type>, Box<Type>),
 }
