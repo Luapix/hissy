@@ -1,10 +1,11 @@
 
 pub(crate) mod chunk;
+#[macro_use]
 pub(crate) mod types;
 
 
 pub use chunk::Program;
-pub use types::Type;
+pub use types::{Type, PrimitiveType};
 
 use std::ops::{Deref, DerefMut};
 use std::cmp::Reverse;
@@ -334,11 +335,11 @@ fn resolve_type(ty: &ast::Type) -> Result<Type, HissyError> {
 		ast::Type::Named(name) => {
 			match name.deref() {
 				"Any" => Ok(Type::Any),
-				"Nil" => Ok(Type::Nil),
-				"Bool" => Ok(Type::Bool),
-				"Int" => Ok(Type::Int),
-				"Real" => Ok(Type::Real),
-				"String" => Ok(Type::String),
+				"Nil" => Ok(prim_ty!(Nil)),
+				"Bool" => Ok(prim_ty!(Bool)),
+				"Int" => Ok(prim_ty!(Int)),
+				"Real" => Ok(prim_ty!(Real)),
+				"String" => Ok(prim_ty!(String)),
 				_ => Err(error(format!("Unknown type name '{}'", name)))
 			}
 		},
@@ -371,7 +372,7 @@ fn can_reach_end(block: &Block) -> bool {
 			_ => {},
 		}
 	}
-	return true;
+	true
 }
 
 
@@ -407,15 +408,15 @@ impl Compiler {
 		
 		let (mut reg, ty) = match expr {
 			Expr::Nil =>
-				(self.chunk.compile_constant(ChunkConstant::Nil)?, Type::Nil),
+				(self.chunk.compile_constant(ChunkConstant::Nil)?, prim_ty!(Nil)),
 			Expr::Bool(b) =>
-				(self.chunk.compile_constant(ChunkConstant::Bool(b))?, Type::Bool),
+				(self.chunk.compile_constant(ChunkConstant::Bool(b))?, prim_ty!(Bool)),
 			Expr::Int(i) =>
-				(self.chunk.compile_constant(ChunkConstant::Int(i))?, Type::Int),
+				(self.chunk.compile_constant(ChunkConstant::Int(i))?, prim_ty!(Int)),
 			Expr::Real(r) =>
-				(self.chunk.compile_constant(ChunkConstant::Real(r))?, Type::Real),
+				(self.chunk.compile_constant(ChunkConstant::Real(r))?, prim_ty!(Real)),
 			Expr::String(s) => 
-				(self.chunk.compile_constant(ChunkConstant::String(s))?, Type::String),
+				(self.chunk.compile_constant(ChunkConstant::String(s))?, prim_ty!(String)),
 			Expr::Id(s) => {
 				let binding = self.ctx.get_binding(&s)?
 					.ok_or_else(|| error(format!("Referencing undefined binding '{}'", s)))?;
@@ -462,24 +463,24 @@ impl Compiler {
 						if !t1.is_numeric() || !t2.is_numeric() {
 							return Err(error(format!("Cannot use numeric operator on {:?} and {:?}", t1, t2)));
 						}
-						if t1 == Type::Int && t2 == Type::Int && op != BinOp::Power {
-							Type::Int
+						if t1 == prim_ty!(Int) && t2 == prim_ty!(Int) && op != BinOp::Power {
+							prim_ty!(Int)
 						} else {
-							Type::Real
+							prim_ty!(Real)
 						}
 					},
 					BinOp::LEq | BinOp::GEq | BinOp::Less | BinOp::Greater => {
 						if !t1.is_numeric() || !t2.is_numeric() {
 							return Err(error(format!("Cannot use comparison operator on {:?} and {:?}", t1, t2)));
 						}
-						Type::Bool
+						prim_ty!(Bool)
 					},
-					BinOp::Equal | BinOp::NEq => Type::Bool,
+					BinOp::Equal | BinOp::NEq => prim_ty!(Bool),
 					BinOp::And | BinOp::Or => {
-						if t1 != Type::Bool || t2 != Type::Bool {
+						if t1 != prim_ty!(Bool) || t2 != prim_ty!(Bool) {
 							return Err(error(format!("Cannot compare {:?} and {:?}", t1, t2)));
 						}
-						Type::Bool
+						prim_ty!(Bool)
 					},
 				};
 				self.chunk.emit_instr(instr);
@@ -497,10 +498,10 @@ impl Compiler {
 				};
 				let ty = match op {
 					UnaOp::Not => {
-						if t != Type::Bool {
+						if t != prim_ty!(Bool) {
 							return Err(error(format!("Cannot use boolean operator on {:?}", t)));
 						}
-						Type::Bool
+						prim_ty!(Bool)
 					},
 					UnaOp::Minus => {
 						if !t.is_numeric() {
@@ -597,7 +598,7 @@ impl Compiler {
 					return Err(error(format!("Cannot index object of type {:?}", tl)));
 				};
 				let (index, ti) = self.compile_expr(*index, None, None)?;
-				if ti != Type::Int {
+				if ti != prim_ty!(Int) {
 					return Err(error(format!("Cannot index list with {:?}", ti)));
 				}
 				self.ctx.regs.free_temp_reg(list);
@@ -607,6 +608,28 @@ impl Compiler {
 				self.chunk.emit_byte(index);
 				needs_copy = false;
 				(self.emit_reg(dest)?, tr)
+			},
+			Expr::Prop(val, prop) => {
+				let (val, tv) = self.compile_expr(*val, None, None)?;
+				let ns_name = tv.get_method_namespace()
+					.ok_or_else(|| error(format!("Type {:?} does not have associated methods", tv)))?;
+				let ns_idx = self.ctx.external.iter().position(|(id, _)| id == &ns_name)
+					.ok_or_else(|| error(format!("Could not find namespace named {}", ns_name)))?;
+				let (prop_idx, prop_ty) = if let Type::Namespace(props) = &self.ctx.external[ns_idx].1 {
+					let prop_idx = props.iter().position(|(id, _)| id == &prop)
+						.ok_or_else(|| error(format!("Type {:?} does not have a method '{}'", tv, prop)))?;
+					(u8::try_from(prop_idx).expect("Namespace has too many methods"), props[prop_idx].1.clone())
+				} else {
+					panic!("Assigned namespace for type was not a namespace");
+				};
+				
+				self.ctx.regs.free_temp_reg(val);
+				self.chunk.emit_instr(InstrType::GetMethod);
+				write_u16(&mut self.chunk.code, ns_idx as u16);
+				self.chunk.emit_byte(prop_idx);
+				self.chunk.emit_byte(val);
+				needs_copy = false;
+				(self.emit_reg(dest)?, prop_ty)
 			},
 			#[allow(unreachable_patterns)]
 			_ => unimplemented!("Unimplemented expression type: {:?}", expr),
@@ -701,7 +724,7 @@ impl Compiler {
 							return Err(error(format!("Cannot index object of type {:?}", tl)));
 						};
 						let (idx, ti) = self.compile_expr(*idx, None, None)?;
-						if ti != Type::Int {
+						if ti != prim_ty!(Int) {
 							return Err(error(format!("Cannot index list with {:?}", ti)));
 						}
 						let (e, te2) = self.compile_expr(e, None, None)?;
@@ -724,7 +747,7 @@ impl Compiler {
 							match cond {
 								Cond::If(e) => {
 									let (cond_reg, t) = self.compile_expr(e, None, None)?;
-									if t != Type::Bool {
+									if t != prim_ty!(Bool) {
 										return Err(error(format!("Expected boolean in condition, got {:?}", t)))
 									}
 									
@@ -763,7 +786,7 @@ impl Compiler {
 					Stat::While(e, bl) => {
 						let begin = self.chunk.code.len();
 						let (cond_reg, t) = self.compile_expr(e, None, None)?;
-						if t != Type::Bool {
+						if t != prim_ty!(Bool) {
 							return Err(error(format!("Expected boolean in condition, got {:?}", t)))
 						}
 						
@@ -826,7 +849,7 @@ impl Compiler {
 		
 		let implicit_return = can_reach_end(&ast);
 		let last_line = self.compile_block(ast)?;
-		if implicit_return && !self.ctx.ret_ty.can_assign(&Type::Nil) {
+		if implicit_return && !self.ctx.ret_ty.can_assign(&prim_ty!(Nil)) {
 			return Err(HissyError(ErrorType::Compilation,
 				format!("Implicit nil return at end of function, but expected {:?}", self.ctx.ret_ty),
 				last_line));
@@ -850,7 +873,7 @@ impl Compiler {
 	pub fn compile_program(mut self, input: &str) -> Result<Program, HissyError> {
 		let ast = parse(input)?;
 		
-		self.compile_chunk(String::from("<main>"), ast, Vec::new(), Type::Nil)?;
+		self.compile_chunk(String::from("<main>"), ast, Vec::new(), prim_ty!(Nil))?;
 		
 		Ok(Program { debug_info: self.debug_info, chunks: self.chunk.finish() })
 	}

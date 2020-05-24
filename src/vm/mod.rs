@@ -47,7 +47,7 @@ use crate::compiler::chunk::{Chunk, Program};
 
 use gc::{GCHeap, GCRef};
 use value::{Value, NIL};
-use object::{Upvalue, UpvalueData, Closure, NativeFunction, List};
+use object::*;
 
 
 pub(crate) const MAX_REGISTERS: u8 = 128;
@@ -70,6 +70,7 @@ pub(crate) enum InstrType {
 	Eq, Neq, Lth, Leq, Gth, Geq,
 	Func, Call, Ret,
 	ListNew, ListExtend, ListGet, ListSet,
+	GetMethod,
 	Jmp, Jit, Jif,
 }
 
@@ -350,7 +351,17 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) -> Result<(), HissyErro
 						let args_start = read_u8(&mut vm.it)?;
 						let args_cnt = read_u8(&mut vm.it)?;
 						let rout = read_u8(&mut vm.it)?;
-						if let Ok(func) = GCRef::<Closure>::try_from(func.clone()) {
+						
+						if let Ok(method) = GCRef::<Method>::try_from(func.clone()) {
+							let mut args = vm.regs.reg_range(args_start, args_cnt).to_vec();
+							args.insert(0, method.this.clone());
+							if let Ok(func) = GCRef::<NativeFunction>::try_from(method.func.clone()) {
+								let res = func.call(args.to_vec())?;
+								*vm.regs.mut_reg(rout) = res;
+							} else {
+								return Err(error(format!("{} is not a method", func.repr())));
+							}
+						} else if let Ok(func) = GCRef::<Closure>::try_from(func.clone()) {
 							vm.call(program, func, args_start, Some(rout));
 						} else if let Ok(func) = GCRef::<NativeFunction>::try_from(func.clone()) {
 							let args = vm.regs.reg_range(args_start, args_cnt);
@@ -451,6 +462,19 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) -> Result<(), HissyErro
 						let index = usize::try_from(index)
 							.map_err(|_| error_str("Cannot index list with negative integer"))?;
 						list.set(index, vm.regs.reg_or_cst(vm.chunk, heap, rin)?.clone())?;
+					},
+					InstrType::GetMethod => {
+						let ext_idx = read_u16(&mut vm.it)?;
+						let prop = read_u8(&mut vm.it)?;
+						let val = read_u8(&mut vm.it)?;
+						let rout = read_u8(&mut vm.it)?;
+						
+						let this = vm.regs.reg_or_cst(vm.chunk, heap, val)?.clone();
+						let ns = GCRef::<Namespace>::try_from(vm.external.get(ext_idx as usize)
+							.ok_or_else(|| error_str("Invalid external value"))?.clone())
+							.map_err(|_| error_str("Invalid namespace"))?;
+						let func = ns.get(prop)?;
+						*vm.regs.mut_reg(rout) = heap.make_value(Method { this, func });
 					}
 					#[allow(unreachable_patterns)]
 					i => unimplemented!("Unimplemented instruction: {:?}", i)

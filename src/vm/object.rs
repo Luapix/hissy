@@ -181,6 +181,47 @@ impl fmt::Debug for List {
 }
 
 
+pub struct Namespace(pub Vec<Value>);
+
+impl Namespace {
+	pub fn get(&self, idx: u8) -> Result<Value, HissyError> {
+		self.0.get(idx as usize).cloned()
+			.ok_or_else(|| error(format!("Can't get index {} in namespace with {} elements", idx, self.0.len())))
+	}
+}
+
+impl Traceable for Namespace {
+	fn touch(&self, initial: bool) {
+		self.0.touch(initial);
+	}
+}
+
+impl fmt::Debug for Namespace {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "<namespace>")
+	}
+}
+
+
+pub struct Method {
+	pub this: Value,
+	pub func: Value,
+}
+
+impl Traceable for Method {
+	fn touch(&self, initial: bool) {
+		self.this.touch(initial);
+		self.func.touch(initial);
+	}
+}
+
+impl fmt::Debug for Method {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "<method>")
+	}
+}
+
+
 #[cfg(test)]
 mod tests {
 	#![allow(clippy::blacklisted_name)]
