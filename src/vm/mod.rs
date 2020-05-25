@@ -70,7 +70,7 @@ pub(crate) enum InstrType {
 	Eq, Neq, Lth, Leq, Gth, Geq,
 	Func, Call, Ret,
 	ListNew, ListExtend, ListGet, ListSet,
-	GetMethod,
+	MakeMethod, CallMethod,
 	Jmp, Jit, Jif,
 }
 
@@ -229,6 +229,18 @@ impl<'a> VMState<'a> {
 		});
 	}
 	
+	fn call_native(&mut self, func: Value, this: Option<Value>, args_start: u8, args_cnt: u8, rout: u8) -> Result<bool, HissyError> {
+		let mut args = self.regs.reg_range(args_start, args_cnt).to_vec();
+		if let Some(this) = this { args.insert(0, this); }
+		if let Ok(func) = GCRef::<NativeFunction>::try_from(func) {
+			let res = func.call(args.to_vec())?;
+			*self.regs.mut_reg(rout) = res;
+			Ok(true)
+		} else {
+			Ok(false)
+		}
+	}
+	
 	pub fn ret(&mut self, program: &'a Program, ret_val: Value) -> Result<bool, HissyError> {
 		let cur_call = self.calls.pop().unwrap();
 		
@@ -347,29 +359,36 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) -> Result<(), HissyErro
 						*vm.regs.mut_reg(rout) = heap.make_value(Closure::new(chunk_id, upvalues));
 					},
 					InstrType::Call => {
-						let func = vm.regs.reg_or_cst(vm.chunk, heap, read_u8(&mut vm.it)?)?;
+						let func = vm.regs.reg_or_cst(vm.chunk, heap, read_u8(&mut vm.it)?)?.clone();
 						let args_start = read_u8(&mut vm.it)?;
 						let args_cnt = read_u8(&mut vm.it)?;
 						let rout = read_u8(&mut vm.it)?;
 						
 						if let Ok(method) = GCRef::<Method>::try_from(func.clone()) {
-							let mut args = vm.regs.reg_range(args_start, args_cnt).to_vec();
-							args.insert(0, method.this.clone());
-							if let Ok(func) = GCRef::<NativeFunction>::try_from(method.func.clone()) {
-								let res = func.call(args.to_vec())?;
-								*vm.regs.mut_reg(rout) = res;
-							} else {
-								return Err(error(format!("{} is not a method", func.repr())));
-							}
+							vm.call_native(method.func.clone(), Some(method.this.clone()), args_start, args_cnt, rout)
+								.map_err(|_| error(format!("{} is not a method", func.repr())))?;
 						} else if let Ok(func) = GCRef::<Closure>::try_from(func.clone()) {
 							vm.call(program, func, args_start, Some(rout));
-						} else if let Ok(func) = GCRef::<NativeFunction>::try_from(func.clone()) {
-							let args = vm.regs.reg_range(args_start, args_cnt);
-							let res = func.call(args.to_vec())?;
-							*vm.regs.mut_reg(rout) = res;
 						} else {
-							return Err(error(format!("Cannot call value {}", func.repr())));
+							vm.call_native(func.clone(), None, args_start, args_cnt, rout)
+								.map_err(|_| error(format!("Cannot call value {}", func.repr())))?;
 						}
+					},
+					InstrType::CallMethod => {
+						let ext_idx = read_u16(&mut vm.it)?;
+						let prop = read_u8(&mut vm.it)?;
+						let val = read_u8(&mut vm.it)?;
+						let args_start = read_u8(&mut vm.it)?;
+						let args_cnt = read_u8(&mut vm.it)?;
+						let rout = read_u8(&mut vm.it)?;
+						
+						let this = vm.regs.reg_or_cst(vm.chunk, heap, val)?.clone();
+						let ns = GCRef::<Namespace>::try_from(vm.external.get(ext_idx as usize)
+							.ok_or_else(|| error_str("Invalid external value"))?.clone())
+							.map_err(|_| error_str("Invalid namespace"))?;
+						let func = ns.get(prop)?.clone();
+						vm.call_native(func.clone(), Some(this), args_start, args_cnt, rout)
+							.map_err(|_| error(format!("Cannot call method {}", func.repr())))?;
 					},
 					InstrType::Ret => {
 						let rin = read_u8(&mut vm.it)?;
@@ -463,7 +482,7 @@ pub fn run_program(heap: &mut GCHeap, program: &Program) -> Result<(), HissyErro
 							.map_err(|_| error_str("Cannot index list with negative integer"))?;
 						list.set(index, vm.regs.reg_or_cst(vm.chunk, heap, rin)?.clone())?;
 					},
-					InstrType::GetMethod => {
+					InstrType::MakeMethod => {
 						let ext_idx = read_u16(&mut vm.it)?;
 						let prop = read_u8(&mut vm.it)?;
 						let val = read_u8(&mut vm.it)?;

@@ -376,6 +376,11 @@ fn can_reach_end(block: &Block) -> bool {
 }
 
 
+enum ObjectProp {
+	Method { ns_idx: u16, prop_idx: u8, prop_ty: Type },
+}
+
+
 /// A struct holding state necessary to compilation.
 pub struct Compiler {
 	debug_info: bool,
@@ -398,6 +403,58 @@ impl Compiler {
 		let reg = dest.map_or_else(|| self.ctx.regs.new_reg(), Ok)?;
 		self.chunk.emit_byte(reg);
 		Ok(reg)
+	}
+	
+	fn find_method(&self, ty: Type, prop: &str) -> Result<Option<(u16, u8, Type)>, HissyError> {
+		let ns_name = if let Some(ns_name) = ty.get_method_namespace() { ns_name }
+			else { return Ok(None); };
+		let ns_idx = if let Some(ns_idx) = self.ctx.external.iter().position(|(id, _)| id == &ns_name) { ns_idx }
+			else { return Ok(None); };
+		let ns_idx = u16::try_from(ns_idx)
+			.map_err(|_| error(format!("Too many externals")))?;
+		let props = if let Type::Namespace(props) = &self.ctx.external[ns_idx as usize].1 { props }
+			else { return Err(error(format!("Namespace name {} for type {:?} is assigned to a non-namespace", ns_name, ty))); };
+		let prop_idx = if let Some(prop_idx) = props.iter().position(|(id, _)| id == prop) { prop_idx }
+			else { return Ok(None); };
+		let prop_idx = u8::try_from(prop_idx)
+			.map_err(|_| error_str("Namespace has too many methods"))?;
+		let prop_ty = props[prop_idx as usize].1.clone();
+		Ok(Some((ns_idx, prop_idx, prop_ty)))
+	}
+	
+	fn find_prop(&mut self, val: Expr, prop: &str) -> Result<(u8, ObjectProp), HissyError> {
+		let (val, ty) = self.compile_expr(val, None, None)?;
+		
+		if let Some((ns_idx, prop_idx, prop_ty)) = self.find_method(ty.clone(), prop)? {
+			Ok((val, ObjectProp::Method { ns_idx, prop_idx, prop_ty }))
+		} else {
+			Err(error(format!("Type {:?} does not have a property {}", ty, prop)))
+		}
+	}
+	
+	fn compile_arguments(&mut self, fun_ty: Type, mut args: Vec<Expr>) -> Result<(u8, u8, Type), HissyError> {
+		let (args_ty, res_ty) = match fun_ty {
+			Type::TypedFunction(args_ty, res_ty) => {
+				if args_ty.len() != args.len() {
+					return Err(error(format!("Expected {} arguments in function call, got {}", args_ty.len(), args.len())))
+				}
+				(Some(args_ty), res_ty)
+			},
+			Type::UntypedFunction(res_ty) => (None, res_ty),
+			_ => return Err(error(format!("Cannot call non-function type {:?}", fun_ty))),
+		};
+		let n = u8::try_from(args.len()).map_err(|_| error_str("Too many function arguments"))?;
+		let arg_range = self.ctx.regs.new_reg_range(n)?;
+		for (i, arg) in args.drain(..).enumerate() {
+			let rout = u8::try_from(usize::from(arg_range) + i).unwrap();
+			let (_, t) = self.compile_expr(arg, Some(rout), None)?;
+			if let Some(args_ty) = &args_ty {
+				if !args_ty[i].can_assign(&t) {
+					return Err(error(format!("Expected argument of type {:?}, got {:?}", args_ty[i], t)));
+				}
+			}
+		}
+		Ok((arg_range, n, *res_ty))
 	}
 	
 	// Compile computation of expr (into dest if given), and returns final register
@@ -515,37 +572,36 @@ impl Compiler {
 				needs_copy = false;
 				(self.emit_reg(dest)?, ty)
 			},
-			Expr::Call(e, mut args) => {
-				let (func, t) = self.compile_expr(*e, None, None)?;
-				let (args_ty, res_ty) = match t {
-					Type::TypedFunction(args_ty, res_ty) => {
-						if args_ty.len() != args.len() {
-							return Err(error(format!("Expected {} arguments in function call, got {}", args_ty.len(), args.len())))
-						}
-						(Some(args_ty), res_ty)
-					},
-					Type::UntypedFunction(res_ty) => (None, res_ty),
-					_ => return Err(error(format!("Cannot call non-function type {:?}", t))),
-				};
-				let n = u8::try_from(args.len()).map_err(|_| error_str("Too many function arguments"))?;
-				let arg_range = self.ctx.regs.new_reg_range(n)?;
-				for (i, arg) in args.drain(..).enumerate() {
-					let rout = u8::try_from(usize::from(arg_range) + i).unwrap();
-					let (_, t) = self.compile_expr(arg, Some(rout), None)?;
-					if let Some(args_ty) = &args_ty {
-						if !args_ty[i].can_assign(&t) {
-							return Err(error(format!("Expected argument of type {:?}, got {:?}", args_ty[i], t)));
+			Expr::Call(e, args) => {
+				if let Expr::Prop(val, prop) = *e { // Try method call shortcut
+					match self.find_prop(*val, &prop)? {
+						(val, ObjectProp::Method { ns_idx, prop_idx, prop_ty }) => {
+							let (arg_range, n, res_ty) = self.compile_arguments(prop_ty, args)?;
+							self.ctx.regs.free_temp_range(arg_range, n);
+							self.ctx.regs.free_temp_reg(val);
+							self.chunk.emit_instr(InstrType::CallMethod);
+							write_u16(&mut self.chunk.code, ns_idx as u16);
+							self.chunk.emit_byte(prop_idx);
+							self.chunk.emit_byte(val);
+							self.chunk.emit_byte(arg_range);
+							self.chunk.emit_byte(n);
+							needs_copy = false;
+							(self.emit_reg(dest)?, res_ty)
 						}
 					}
+					
+				} else {
+					let (func, func_ty) = self.compile_expr(*e, None, None)?;
+					let (arg_range, n, res_ty) = self.compile_arguments(func_ty, args)?;
+					self.ctx.regs.free_temp_range(arg_range, n);
+					self.ctx.regs.free_temp_reg(func);
+					self.chunk.emit_instr(InstrType::Call);
+					self.chunk.emit_byte(func);
+					self.chunk.emit_byte(arg_range);
+					self.chunk.emit_byte(n);
+					needs_copy = false;
+					(self.emit_reg(dest)?, res_ty)
 				}
-				self.ctx.regs.free_temp_range(arg_range, n);
-				self.ctx.regs.free_temp_reg(func);
-				self.chunk.emit_instr(InstrType::Call);
-				self.chunk.emit_byte(func);
-				self.chunk.emit_byte(arg_range);
-				self.chunk.emit_byte(n);
-				needs_copy = false;
-				(self.emit_reg(dest)?, *res_ty)
 			},
 			Expr::Function(args, ret_ty, bl) =>  {
 				let ty = resolve_function_type(&args, &ret_ty)?;
@@ -610,26 +666,19 @@ impl Compiler {
 				(self.emit_reg(dest)?, tr)
 			},
 			Expr::Prop(val, prop) => {
-				let (val, tv) = self.compile_expr(*val, None, None)?;
-				let ns_name = tv.get_method_namespace()
-					.ok_or_else(|| error(format!("Type {:?} does not have associated methods", tv)))?;
-				let ns_idx = self.ctx.external.iter().position(|(id, _)| id == &ns_name)
-					.ok_or_else(|| error(format!("Could not find namespace named {}", ns_name)))?;
-				let (prop_idx, prop_ty) = if let Type::Namespace(props) = &self.ctx.external[ns_idx].1 {
-					let prop_idx = props.iter().position(|(id, _)| id == &prop)
-						.ok_or_else(|| error(format!("Type {:?} does not have a method '{}'", tv, prop)))?;
-					(u8::try_from(prop_idx).expect("Namespace has too many methods"), props[prop_idx].1.clone())
-				} else {
-					panic!("Assigned namespace for type was not a namespace");
-				};
+				let (val, ty) = self.compile_expr(*val, None, None)?;
 				
-				self.ctx.regs.free_temp_reg(val);
-				self.chunk.emit_instr(InstrType::GetMethod);
-				write_u16(&mut self.chunk.code, ns_idx as u16);
-				self.chunk.emit_byte(prop_idx);
-				self.chunk.emit_byte(val);
-				needs_copy = false;
-				(self.emit_reg(dest)?, prop_ty)
+				if let Some((ns_idx, prop_idx, prop_ty)) = self.find_method(ty.clone(), &prop)? {
+					self.ctx.regs.free_temp_reg(val);
+					self.chunk.emit_instr(InstrType::MakeMethod);
+					write_u16(&mut self.chunk.code, ns_idx as u16);
+					self.chunk.emit_byte(prop_idx);
+					self.chunk.emit_byte(val);
+					needs_copy = false;
+					(self.emit_reg(dest)?, prop_ty)
+				} else {
+					return Err(error(format!("Type {:?} does not have a property {}", ty, prop)));
+				}
 			},
 			#[allow(unreachable_patterns)]
 			_ => unimplemented!("Unimplemented expression type: {:?}", expr),

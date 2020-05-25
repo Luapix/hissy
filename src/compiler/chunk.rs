@@ -344,8 +344,11 @@ impl Program {
 					GetExt => {
 						print!("e{}, {}", read_u16(&mut it)?, chunk.format_reg(&mut it)?);
 					},
-					GetMethod => {
+					MakeMethod => {
 						print!("e{}, .{}, {}, {}", read_u16(&mut it)?, read_u8(&mut it)?, chunk.format_reg(&mut it)?, chunk.format_reg(&mut it)?);
+					},
+					CallMethod => {
+						print!("e{}, .{}, {}, {}, {}, {}", read_u16(&mut it)?, read_u8(&mut it)?, chunk.format_reg(&mut it)?, chunk.format_reg(&mut it)?, read_u8(&mut it)?, chunk.format_reg(&mut it)?);
 					},
 					ListExtend => {
 						print!("{}, {}, {}", chunk.format_reg(&mut it)?, chunk.format_reg(&mut it)?, read_u8(&mut it)?);
