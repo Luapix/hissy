@@ -15,6 +15,7 @@ pub enum Type {
 	Primitive(PrimitiveType),
 	
 	List(Box<Type>),
+	Iterator(Box<Type>),
 	TypedFunction(Vec<Type>, Box<Type>),
 	UntypedFunction(Box<Type>),
 	
@@ -32,7 +33,7 @@ impl fmt::Debug for Type {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
 			Type::Primitive(pt) => write!(f, "{:?}", pt),
-			Type::List(t) => write!(f, "List<{:?}>", t),
+			Type::List(ty) => write!(f, "List<{:?}>", ty),
 			Type::TypedFunction(args_ty, res_ty) => {
 				write!(f, "(")?;
 				for (i, arg_ty) in args_ty.iter().enumerate() {
@@ -44,6 +45,7 @@ impl fmt::Debug for Type {
 				write!(f, ") -> {:?}", res_ty)
 			},
 			Type::UntypedFunction(res_ty) => write!(f, "(...) -> {:?}", res_ty),
+			Type::Iterator(ty) => write!(f, "Iterator<{:?}>", ty),
 			Type::Namespace(_) => write!(f, "Namespace"),
 			Type::Any => write!(f, "Any"),
 		}
@@ -91,6 +93,13 @@ impl Type {
 				};
 				res_ty1.can_assign(res_ty2)
 			}
+			Type::Iterator(t1) => {
+				if let Type::Iterator(t2) = other {
+					t1.can_assign(t2)
+				} else {
+					false
+				}
+			},
 			Type::Namespace(_) => false,
 			Type::Any => true,
 		}
@@ -99,6 +108,7 @@ impl Type {
 	pub fn get_method_namespace(&self) -> Option<String> {
 		match self {
 			Type::List(_) => Some(String::from("List")),
+			Type::Iterator(_) => Some(String::from("Iterator")),
 			_ => None,
 		}
 	}

@@ -132,6 +132,9 @@ peg::parser! {
 					Ok(Stat::ExprStat(e))
 				}
 			}
+			/ sym("for") i:typed_ident() sym("in") e:expression(pos) b:indented_block(pos) {
+				Stat::For(i.0, i.1, e, b)
+			}
 		
 		rule positioned_statement(pos: &[LineCol]) -> Positioned<Stat>
 			= p:position!() s:statement(pos) { Positioned(s, (pos[p].line, pos[p].column)) }

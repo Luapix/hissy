@@ -422,14 +422,13 @@ impl Compiler {
 		Ok(Some((ns_idx, prop_idx, prop_ty)))
 	}
 	
-	fn find_prop(&mut self, val: Expr, prop: &str) -> Result<(u8, ObjectProp), HissyError> {
+	fn find_prop(&mut self, val: Expr, prop: &str) -> Result<(Type, Option<(u8, ObjectProp)>), HissyError> {
 		let (val, ty) = self.compile_expr(val, None, None)?;
 		
-		if let Some((ns_idx, prop_idx, prop_ty)) = self.find_method(ty.clone(), prop)? {
-			Ok((val, ObjectProp::Method { ns_idx, prop_idx, prop_ty }))
-		} else {
-			Err(error(format!("Type {:?} does not have a property {}", ty, prop)))
-		}
+		let prop = self.find_method(ty.clone(), prop)?.map(|(ns_idx, prop_idx, prop_ty)| {
+			(val, ObjectProp::Method { ns_idx, prop_idx, prop_ty })
+		});
+		Ok((ty, prop))
 	}
 	
 	fn compile_arguments(&mut self, fun_ty: Type, mut args: Vec<Expr>) -> Result<(u8, u8, Type), HissyError> {
@@ -575,7 +574,7 @@ impl Compiler {
 			Expr::Call(e, args) => {
 				if let Expr::Prop(val, prop) = *e { // Try method call shortcut
 					match self.find_prop(*val, &prop)? {
-						(val, ObjectProp::Method { ns_idx, prop_idx, prop_ty }) => {
+						(_ty, Some((val, ObjectProp::Method { ns_idx, prop_idx, prop_ty }))) => {
 							let (arg_range, n, res_ty) = self.compile_arguments(prop_ty, args)?;
 							self.ctx.regs.free_temp_range(arg_range, n);
 							self.ctx.regs.free_temp_reg(val);
@@ -587,7 +586,8 @@ impl Compiler {
 							self.chunk.emit_byte(n);
 							needs_copy = false;
 							(self.emit_reg(dest)?, res_ty)
-						}
+						},
+						(ty, None) => return Err(error(format!("Cannot call undefined property {} of type {:?}", prop, ty)))
 					}
 					
 				} else {
@@ -697,10 +697,13 @@ impl Compiler {
 	}
 
 
-	fn compile_block(&mut self, stats: Block) -> Result<u16, HissyError> {
-		let used_before = self.ctx.regs.used;
+	fn compile_block(&mut self, locals: Vec<(String, u8, Type)>, stats: Block) -> Result<u16, HissyError> {
+		let used_before = self.ctx.regs.used - (locals.len() as u16);
 		
 		self.ctx.enter_block();
+		for (id, reg, ty) in locals {
+			self.ctx.make_local(id, reg, ty);
+		}
 		
 		let mut line = 0;
 		for Positioned(stat, (line2, _)) in stats {
@@ -807,7 +810,7 @@ impl Compiler {
 									self.chunk.emit_byte(0); // Placeholder
 									self.chunk.emit_byte(cond_reg);
 									
-									self.compile_block(bl)?;
+									self.compile_block(vec![], bl)?;
 									
 									if i != last_branch {
 										// Jump out of condition at end of block
@@ -818,7 +821,7 @@ impl Compiler {
 									}
 								},
 								Cond::Else => {
-									self.compile_block(bl)?;
+									self.compile_block(vec![], bl)?;
 								}
 							}
 							
@@ -845,10 +848,60 @@ impl Compiler {
 						self.chunk.emit_byte(0); // Placeholder
 						self.chunk.emit_byte(cond_reg);
 						
-						self.compile_block(bl)?;
+						self.compile_block(vec![], bl)?;
 						
 						self.chunk.emit_instr(InstrType::Jmp);
 						emit_jump_to(&mut self.chunk, begin)?;
+						fill_in_jump_from(&mut self.chunk, placeholder)?;
+					},
+					Stat::For(id, el_ty, e, bl) => {
+						let el_ty = el_ty.map(|ty| resolve_type(&ty)).transpose()?;
+						
+						let res = match self.find_prop(e, "next")? {
+							(it_ty, Some((it_reg, ObjectProp::Method { ns_idx, prop_idx, prop_ty: _prop_ty }))) => {
+								if let Type::Iterator(el_ty2) = it_ty {
+									let el_ty = if let Some(el_ty) = el_ty {
+										if !el_ty.can_assign(&el_ty2) {
+											return Err(error(format!("Cannot define variable of type {:?} from iterator on type {:?}", el_ty, el_ty2)));
+										}
+										el_ty
+									} else {
+										*el_ty2
+									};
+									
+									// Hacky way of making the iterator a "persistent temporary"
+									self.ctx.regs.make_local(it_reg);
+									let var_reg = self.ctx.regs.new_reg()?;
+									
+									let begin = self.chunk.code.len();
+									self.chunk.emit_instr(InstrType::CallMethod);
+									write_u16(&mut self.chunk.code, ns_idx as u16);
+									self.chunk.emit_byte(prop_idx);
+									self.chunk.emit_byte(it_reg);
+									self.chunk.emit_byte(it_reg + 1);
+									self.chunk.emit_byte(0);
+									self.chunk.emit_byte(var_reg);
+									Ok((it_reg, var_reg, el_ty, begin))
+								} else {
+									Err(it_ty)
+								}
+							},
+							(it_ty, None) => Err(it_ty),
+						};
+						let (it_reg, var_reg, el_ty, begin) = res.map_err(|ty| error(format!("{:?} is not an iterable type", ty)))?;
+						
+						self.chunk.emit_instr(InstrType::Jin);
+						let placeholder = self.chunk.code.len();
+						self.chunk.emit_byte(0); // Placeholder
+						self.chunk.emit_byte(var_reg);
+						
+						self.compile_block(vec![(id, var_reg, el_ty)], bl)?;
+						
+						self.chunk.emit_instr(InstrType::Jmp);
+						emit_jump_to(&mut self.chunk, begin)?;
+						
+						self.ctx.regs.free_reg(it_reg);
+						
 						fill_in_jump_from(&mut self.chunk, placeholder)?;
 					},
 					Stat::Return(e) => {
@@ -875,7 +928,7 @@ impl Compiler {
 		
 		self.ctx.leave_block(&mut self.chunk);
 		
-		assert!(used_before == self.ctx.regs.used, "Leaked register");
+		assert!(used_before == self.ctx.regs.used, "Leaked registers: {} -> {}", used_before, self.ctx.regs.used);
 		// Basic check to make sure no registers have been "leaked"
 		
 		Ok(line)
@@ -890,21 +943,18 @@ impl Compiler {
 			self.chunk.debug_info.name = name;
 		}
 		
-		self.ctx.enter_block();
-		for (id, ty) in args {
-			let reg = self.ctx.regs.new_reg()?;
-			self.ctx.make_local(id, reg, ty);
-		}
+		let args: Result<Vec<_>, _> = args.into_iter()
+			.map(|(id, ty)| Ok((id, self.ctx.regs.new_reg()?, ty)))
+			.collect();
+		let args = args?;
 		
 		let implicit_return = can_reach_end(&ast);
-		let last_line = self.compile_block(ast)?;
+		let last_line = self.compile_block(args, ast)?;
 		if implicit_return && !self.ctx.ret_ty.can_assign(&prim_ty!(Nil)) {
 			return Err(HissyError(ErrorType::Compilation,
 				format!("Implicit nil return at end of function, but expected {:?}", self.ctx.ret_ty),
 				last_line));
 		}
-		
-		self.ctx.leave_block(&mut self.chunk);
 		
 		self.chunk.nb_registers = self.ctx.regs.required;
 		self.chunk.upvalues = self.ctx.upvalues.iter().map(|b| b.reg).collect();

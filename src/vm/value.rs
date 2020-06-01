@@ -52,6 +52,10 @@ impl Value {
 		}
 	}
 	
+	pub fn is_nil(&self) -> bool {
+		self.get_type() == ValueType::Nil
+	}
+	
 	pub(super) fn from_pointer(pointer: *const GCWrapper, root: bool) -> Value {
 		let pointer = pointer as *mut () as u64; // Erases fat pointer data
 		assert!(pointer & DATA_MASK == pointer, "Object pointer has too many bits to fit in Value");

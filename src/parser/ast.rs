@@ -71,6 +71,7 @@ pub enum Stat {
 	Set(LExpr, Expr),
 	Cond(Vec<Branch>),
 	While(Expr, Block),
+	For(String, Option<Type>, Expr, Block),
 	Return(Expr),
 }
 

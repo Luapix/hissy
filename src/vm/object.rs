@@ -5,7 +5,7 @@ use std::fmt;
 
 use crate::{HissyError, ErrorType};
 use super::value::Value;
-use super::gc::{Traceable, GC, GCRef};
+use super::gc::{GCHeap, Traceable, GC, GCRef};
 
 
 fn error(s: String) -> HissyError {
@@ -97,21 +97,21 @@ impl fmt::Debug for Closure {
 }
 
 
-pub type HissyFun = dyn FnMut(Vec<Value>) -> Result<Value, HissyError>;
+pub type HissyFun = dyn FnMut(&mut GCHeap, Vec<Value>) -> Result<Value, HissyError>;
 
 pub struct NativeFunction {
 	pub fun: Box<RefCell<HissyFun>>
 }
 
 impl NativeFunction {
-	pub(crate) fn new(fun: impl FnMut(Vec<Value>) -> Result<Value, HissyError> + 'static) -> NativeFunction {
+	pub(crate) fn new(fun: impl FnMut(&mut GCHeap, Vec<Value>) -> Result<Value, HissyError> + 'static) -> NativeFunction {
 		NativeFunction {
 			fun: Box::new(RefCell::new(fun)),
 		}
 	}
 	
-	pub fn call(&self, args: Vec<Value>) -> Result<Value, HissyError> {
-		self.fun.borrow_mut().deref_mut()(args)
+	pub fn call(&self, heap: &mut GCHeap, args: Vec<Value>) -> Result<Value, HissyError> {
+		self.fun.borrow_mut().deref_mut()(heap, args)
 	}
 }
 
@@ -218,6 +218,34 @@ impl Traceable for Method {
 impl fmt::Debug for Method {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> fmt::Result {
 		write!(f, "<method>")
+	}
+}
+
+
+pub trait GCIterator {
+	fn next(&mut self, heap: &mut GCHeap) -> Option<Value>;
+}
+
+impl<T: Iterator<Item = Value>> GCIterator for T {
+	fn next(&mut self, _heap: &mut GCHeap) -> Option<Value> { self.next() }
+}
+
+pub struct IteratorWrapper {
+	pub iter: Box<RefCell<dyn GCIterator>>,
+}
+
+impl IteratorWrapper {
+	
+	pub fn next(&self, heap: &mut GCHeap) -> Option<Value> {
+		self.iter.borrow_mut().next(heap)
+	}
+}
+
+impl Traceable for IteratorWrapper {}
+
+impl fmt::Debug for IteratorWrapper {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "<int iterator>")
 	}
 }
 

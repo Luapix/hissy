@@ -31,8 +31,8 @@ pub enum Token {
 	EOF,
 }
 
-static KEYWORDS: [&str; 13] = [
-	"let", "if", "else", "while",
+static KEYWORDS: [&str; 15] = [
+	"let", "if", "else", "while", "for", "in",
 	"not", "and", "or",
 	"nil", "true", "false",
 	"return",

@@ -335,7 +335,7 @@ impl Program {
 					Jmp => {
 						print!("{}", chunk.format_rel_add(&mut it));
 					},
-					Jit | Jif => {
+					Jit | Jif | Jin => {
 						print!("{}, {}", chunk.format_rel_add(&mut it), chunk.format_reg(&mut it)?);
 					},
 					GetUp | SetUp => {
