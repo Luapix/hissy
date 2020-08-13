@@ -1,5 +1,5 @@
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ops::{Deref, DerefMut};
 use std::fmt;
 
@@ -159,6 +159,10 @@ impl List {
 		*val2 = val;
 		Ok(())
 	}
+	
+	pub fn get_copy(&self) -> Vec<Value> {
+		self.data.borrow().clone()
+	}
 }
 
 impl Traceable for List {
@@ -224,10 +228,11 @@ impl fmt::Debug for Method {
 
 pub trait GCIterator {
 	fn next(&mut self, heap: &mut GCHeap) -> Option<Value>;
+	fn touch(&self, _initial: bool) {}
 }
 
-impl<T: Iterator<Item = Value>> GCIterator for T {
-	fn next(&mut self, _heap: &mut GCHeap) -> Option<Value> { self.next() }
+impl<T: Iterator<Item = T2>, T2: Into<Value>> GCIterator for T {
+	fn next(&mut self, _heap: &mut GCHeap) -> Option<Value> { self.next().map(|v| v.into()) }
 }
 
 pub struct IteratorWrapper {
@@ -235,17 +240,53 @@ pub struct IteratorWrapper {
 }
 
 impl IteratorWrapper {
-	
 	pub fn next(&self, heap: &mut GCHeap) -> Option<Value> {
 		self.iter.borrow_mut().next(heap)
 	}
 }
 
-impl Traceable for IteratorWrapper {}
+impl Traceable for IteratorWrapper {
+	fn touch(&self, initial: bool) {
+		self.iter.borrow_mut().touch(initial);
+	}
+}
 
 impl fmt::Debug for IteratorWrapper {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "<int iterator>")
+		write!(f, "<iterator>")
+	}
+}
+
+
+pub struct VecIterator {
+	pub values: Vec<Value>,
+	pub next_idx: Cell<usize>,
+}
+
+impl VecIterator {
+	pub fn new(values: Vec<Value>) -> VecIterator {
+		VecIterator {
+			values,
+			next_idx: Cell::new(0),
+		}
+	}
+}
+
+impl GCIterator for VecIterator {
+	fn next(&mut self, _heap: &mut GCHeap) -> Option<Value> {
+		let next_idx = self.next_idx.get();
+		if next_idx < self.values.len() {
+			self.next_idx.set(next_idx + 1);
+			Some(self.values.get(next_idx).unwrap().clone())
+		} else {
+			None
+		}
+	}
+	
+	fn touch(&self, initial: bool) {
+		for value in &self.values {
+			value.touch(initial);
+		}
 	}
 }
 

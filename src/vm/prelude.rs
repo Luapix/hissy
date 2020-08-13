@@ -5,7 +5,9 @@ use std::iter::Iterator;
 
 use crate::{prim_ty, HissyError, ErrorType};
 use crate::compiler::{Type, PrimitiveType};
-use crate::vm::{gc::{GCHeap, GCRef}, value::{Value, NIL}, object::{NativeFunction, List, Namespace, IteratorWrapper}};
+use crate::vm::gc::{GCHeap, GCRef};
+use crate::vm::value::{Value, NIL};
+use crate::vm::object::{NativeFunction, List, Namespace, IteratorWrapper, VecIterator};
 
 fn error(s: String) -> HissyError {
 	HissyError(ErrorType::Execution, s, 0)
@@ -19,6 +21,7 @@ pub fn list() -> Vec<(String, Type)> {
 		(String::from("List"), Type::Namespace(vec![
 			(String::from("size"), Type::TypedFunction(vec![], Box::new(prim_ty!(Int)))),
 			(String::from("add"), Type::TypedFunction(vec![Type::Any], Box::new(prim_ty!(Nil)))),
+			(String::from("iter"), Type::TypedFunction(vec![], Box::new(Type::Iterator(Box::new(Type::Any))))),
 		])),
 		(String::from("Iterator"), Type::Namespace(vec![
 			(String::from("next"), Type::TypedFunction(vec![], Box::new(Type::Any))),
@@ -40,8 +43,16 @@ pub fn create(heap: &mut GCHeap) -> Vec<Value> {
 		this.extend(&[ args[1].clone() ]);
 		Ok(NIL)
 	}));
+	let list_iter = heap.make_value(NativeFunction::new(|heap, args| {
+		let this = GCRef::<List>::try_from(args[0].clone()).unwrap();
+		Ok(heap.make_value(IteratorWrapper {
+			iter: Box::new(RefCell::new(
+				VecIterator::new(this.get_copy())
+			))
+		}))
+	}));
 	res.push(heap.make_value(
-		Namespace(vec![ list_size, list_add ])
+		Namespace(vec![ list_size, list_add, list_iter ])
 	));
 	
 	let iter_next = heap.make_value(NativeFunction::new(|heap, args| {
