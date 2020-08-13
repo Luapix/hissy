@@ -12,9 +12,6 @@ use crate::vm::object::{NativeFunction, List, Namespace, IteratorWrapper, VecIte
 fn error(s: String) -> HissyError {
 	HissyError(ErrorType::Execution, s, 0)
 }
-fn error_str(s: &str) -> HissyError {
-	error(String::from(s))
-}
 
 pub fn list() -> Vec<(String, Type)> {
 	vec![
@@ -28,6 +25,8 @@ pub fn list() -> Vec<(String, Type)> {
 		])),
 		(String::from("log"), Type::UntypedFunction(Box::new(prim_ty!(Nil)))),
 		(String::from("range"), Type::TypedFunction(vec![prim_ty!(Int), prim_ty!(Int)], Box::new(Type::Iterator(Box::new(prim_ty!(Int)))))),
+		(String::from("int"), Type::TypedFunction(vec![Type::Any], Box::new(prim_ty!(Int)))),
+		(String::from("string"), Type::TypedFunction(vec![Type::Any], Box::new(prim_ty!(String)))),
 	]
 }
 
@@ -90,6 +89,31 @@ pub fn create(heap: &mut GCHeap) -> Vec<Value> {
 					(start..end).map(Value::from)
 				))
 			}))
+		})
+	));
+	
+	res.push(heap.make_value(
+		NativeFunction::new(|_heap, args| {
+			if args.len() != 1 {
+				return Err(error(format!("Expected 1 argument, got {}", args.len())));
+			}
+			if i32::try_from(&args[0]).is_ok() {
+				Ok(args[0].clone())
+			} else {
+				Err(error(format!("Expected integer value, got {:?}", &args[0])))
+			}
+		})
+	));
+	res.push(heap.make_value(
+		NativeFunction::new(|_heap, args| {
+			if args.len() != 1 {
+				return Err(error(format!("Expected 1 argument, got {}", args.len())));
+			}
+			if GCRef::<String>::try_from(args[0].clone()).is_ok() {
+				Ok(args[0].clone())
+			} else {
+				Err(error(format!("Expected string value, got {:?}", &args[0])))
+			}
 		})
 	));
 	
