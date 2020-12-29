@@ -1,4 +1,4 @@
-# hissy
+# hissy (discontinued)
 A toy VM-based language implemented in Rust
 
 This is a work-in-progress bytecode compiler and virtual machine for a programming language tentatively named Hissy.
